@@ -6,7 +6,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from pypdf import PdfReader
 
-from .schema import CoAData
+from schema.schema import CoAData
 from .state import AgentState
 
 load_dotenv()
