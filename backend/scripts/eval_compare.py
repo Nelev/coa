@@ -3,6 +3,7 @@
 Calls the real model; needs OPENROUTER_API_KEY. Run from backend/:
     .venv/bin/python -m scripts.eval_compare
 """
+
 import sys
 
 from agent.agent import DOCS_DIR, app

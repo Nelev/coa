@@ -8,6 +8,7 @@ class AgentState(TypedDict):
     """
     Represents the state of the agent.
     """
+
     messages: Annotated[list[AnyMessage], add_messages]
     document_path: str
     document_text: str
