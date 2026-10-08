@@ -4,43 +4,28 @@ from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
+from langchain_core.utils.json import parse_json_markdown
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from pypdf import PdfReader
 
 from schema.schema import CoAData, ComparisonResult, Issue, TestCheck
+from .prompts import COMPARE_PROMPT, EXTRACTION_PROMPT, RENDER_UI_PROMPT
 from .state import AgentState
 
 load_dotenv()
 
 
-EXTRACTION_PROMPT = (
-    "You are reading a supplier Certificate of Analysis (CoA). Extract its data exactly as written.\n"
-    "- Copy values verbatim; never infer, correct, convert or round them.\n"
-    "- Use null for anything the document does not state.\n"
-    "- Every row of the analytical results table is one test; do not mix header fields into the tests.\n\n"
-    "Document:\n"
-)
-
-
-COMPARE_PROMPT = (
-    "You are an incoming-quality-control reviewer at a plant. Compare the results on a supplier "
-    "Certificate of Analysis with the PLANT requirements for the material. Judge against the plant "
-    "requirements only, never against the supplier's own limits.\n"
-    "- Return exactly one check for every test in the plant requirements, using its test name verbatim.\n"
-    "- Limits are inclusive: a value equal to a limit passes.\n"
-    "- A result written as '< x' passes a max limit only if x <= max. Against a min limit it cannot be "
-    "confirmed, so the verdict is review.\n"
-    "- If the CoA unit differs from the plant unit, the verdict is review. Never convert units silently.\n"
-    "- Qualitative tests pass only if the CoA result is one of the accepted words (case-insensitive). "
-    "Any other result is review, never an assumed pass.\n"
-    "- A plant-required test that is not reported on the CoA is fail, with the reason 'not reported'.\n"
-    "- Ignore CoA tests that the plant does not require.\n"
-    "- Quote numbers verbatim in the reason; never round or restate them. For fail and review, say in "
-    "the same sentence why (e.g. 'exceeds the maximum', 'below the minimum', 'not an accepted result').\n"
-    "- Verdicts: pass = meets the requirement; fail = clearly violates it or is missing; "
-    "review = cannot be decided automatically.\n\n"
-)
+FALLBACK_UI_SPEC = {
+    "root": "error",
+    "elements": {
+        "error": {
+            "type": "Alert",
+            "props": {"title": "The report could not be generated", "message": "The model did not return a valid layout. Run the agent again.", "type": "error"},
+            "children": [],
+        }
+    },
+}
 
 DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
 PLANT_SPECS_PATH = DOCS_DIR / "plant_specs.json"
@@ -93,7 +78,7 @@ def load_plant_spec(state: AgentState) -> dict:
 
 
 def route_after_plant_spec(state: AgentState) -> str:
-    return "compare_specs" if state.get("plant_spec") else END
+    return "compare_specs" if state.get("plant_spec") else "render_ui"
 
 
 def _plant_requirement(test: dict) -> str:
@@ -143,6 +128,30 @@ def compare_specs(state: AgentState) -> dict:
     return {"test_checks": test_checks, "issues": issues}
 
 
+def render_ui(state: AgentState) -> dict:
+    """Ask the model to lay out the results as a json-render UI spec."""
+    data = {
+        "header": state.get("supplier_materials", {}),
+        "tests": [
+            {k: c[k] for k in ("test", "verdict", "supplier_result", "plant_requirement")}
+            for c in state.get("test_checks", [])
+        ],
+        "issues": state.get("issues", []),
+    }
+    prompt = RENDER_UI_PROMPT + json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    feedback = ""
+    for _ in range(2):  # one retry, telling the model what was wrong
+        try:
+            spec = parse_json_markdown(get_llm().invoke(prompt + feedback).content)
+        except ValueError as error:
+            feedback = f"\n\nYour previous reply was not valid JSON ({error}). Reply with only the JSON object."
+            continue
+        if isinstance(spec, dict) and isinstance(spec.get("elements"), dict) and spec.get("root") in spec["elements"]:
+            return {"ui_spec": spec}
+        feedback = "\n\nYour previous reply was not a spec with a \"root\" key that exists in \"elements\". Reply with only the JSON object."
+    return {"ui_spec": FALLBACK_UI_SPEC}
+
+
 graph = StateGraph(AgentState)
 
 graph.add_node("load_document", load_document)
@@ -152,17 +161,22 @@ graph.add_edge("load_document", "get_document_data")
 graph.add_node("load_plant_spec", load_plant_spec)
 graph.add_node("compare_specs", compare_specs)
 graph.add_edge("get_document_data", "load_plant_spec")
-graph.add_conditional_edges("load_plant_spec", route_after_plant_spec, ["compare_specs", END])
-graph.add_edge("compare_specs", END)
+graph.add_node("render_ui", render_ui)
+graph.add_conditional_edges("load_plant_spec", route_after_plant_spec, ["compare_specs", "render_ui"])
+graph.add_edge("compare_specs", "render_ui")
+graph.add_edge("render_ui", END)
 
 app = graph.compile()
 
 
 if __name__ == "__main__":
-    import sys
+    import argparse
 
-    default_doc = DOCS_DIR / "sample_coa_citric_acid.pdf"
-    result = app.invoke({"document_path": sys.argv[1] if len(sys.argv) > 1 else str(default_doc)})
+    parser = argparse.ArgumentParser(description="Check a supplier CoA against the plant specification.")
+    parser.add_argument("pdf", nargs="?", default=str(DOCS_DIR / "sample_coa_citric_acid.pdf"))
+    parser.add_argument("--ui-out", type=Path, help="write the report UI spec (json-render) to this file")
+    args = parser.parse_args()
+    result = app.invoke({"document_path": args.pdf})
 
     print("== Header ==")
     for key, value in result["supplier_materials"].items():
@@ -177,3 +191,7 @@ if __name__ == "__main__":
     print(f"\n== Issues ({len(result['issues'])}) ==")
     for issue in result["issues"]:
         print(f"[{issue['severity']}] {issue['test'] or '-'}: {issue['message']}")
+
+    if args.ui_out:
+        args.ui_out.write_text(json.dumps(result["ui_spec"], indent=2, ensure_ascii=False) + "\n")
+        print(f"\nwrote the UI spec to {args.ui_out}")

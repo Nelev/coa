@@ -1,5 +1,6 @@
+from types import SimpleNamespace
+
 import pytest
-from langgraph.graph import END
 
 from agent import agent
 from schema import schema
@@ -35,7 +36,9 @@ class FakeLLM:
 
     def invoke(self, _prompt):
         self.calls += 1
-        return schema.ComparisonResult(checks=self.responses.pop(0))
+        response = self.responses.pop(0)
+        # a list of checks is a comparison result; anything else is a raw chat reply
+        return schema.ComparisonResult(checks=response) if isinstance(response, list) else SimpleNamespace(content=response)
 
 
 @pytest.fixture
@@ -91,7 +94,7 @@ def test_unknown_product_code_records_issue_and_skips_comparison(monkeypatch, tm
     monkeypatch.setattr(agent, "PLANT_SPECS_PATH", specs)
     out = agent.load_plant_spec({"supplier_materials": {"product_code": "XX-1"}})
     assert out["issues"][0]["kind"] == "missing_plant_spec"
-    assert agent.route_after_plant_spec(out) == END
+    assert agent.route_after_plant_spec(out) == "render_ui"
 
 
 def test_known_product_code_routes_to_comparison(monkeypatch, tmp_path):
@@ -101,3 +104,25 @@ def test_known_product_code_routes_to_comparison(monkeypatch, tmp_path):
     out = agent.load_plant_spec({"supplier_materials": {"product_code": "CA-ANH-25"}})
     assert out["plant_spec"]["name"] == "Citric Acid"
     assert agent.route_after_plant_spec(out) == "compare_specs"
+
+
+VALID_SPEC = '{"root": "a", "elements": {"a": {"type": "Text", "props": {"text": "hi"}, "children": []}}}'
+
+
+def test_render_ui_parses_the_spec_even_inside_code_fences(fake_llm):
+    llm = fake_llm(f"```json\n{VALID_SPEC}\n```")
+    out = agent.render_ui({"issues": []})
+    assert out["ui_spec"]["root"] == "a"
+    assert llm.calls == 1
+
+
+def test_render_ui_retries_once_on_invalid_json(fake_llm):
+    llm = fake_llm("not json", VALID_SPEC)
+    assert agent.render_ui({"issues": []})["ui_spec"]["root"] == "a"
+    assert llm.calls == 2
+
+
+def test_render_ui_falls_back_to_an_error_alert(fake_llm):
+    fake_llm("not json", '{"root": "missing", "elements": {}}')
+    spec = agent.render_ui({"issues": []})["ui_spec"]
+    assert spec["elements"][spec["root"]]["type"] == "Alert"
