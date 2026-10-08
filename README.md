@@ -10,11 +10,12 @@ and checks the reported results against the **plant's own specification** for th
 | PDF text extraction | done |
 | Structured extraction of the CoA (LLM) | done |
 | Comparison against plant specs (LLM) → `issues` | done |
+| Report page: model lays out the results as a json-render UI spec, rendered by the frontend | done (reads a dev fixture) |
 | Supplier-approval and shelf-life checks | not started |
 | `report` node (prose summary of the issues) | not started |
 | Pause / resume (`is_running`, `is_paused`) | state fields only, not wired |
 | API endpoint for the agent | not started (`backend/main.py` only has `/health`) |
-| Frontend (Next.js + shadcn dashboard) | scaffold only, not connected to the agent |
+| Frontend (Next.js + shadcn dashboard) | renders the report from a fixture file; not connected to the agent API |
 
 The plant limits in `backend/docs/plant_specs.json` are **placeholder values**, not real plant requirements.
 
@@ -23,8 +24,8 @@ The plant limits in `backend/docs/plant_specs.json` are **placeholder values**, 
 The agent is a [LangGraph](https://langchain-ai.github.io/langgraph/) graph in `backend/agent/agent.py`:
 
 ```
-START → load_document → get_document_data → load_plant_spec ─┬→ compare_specs → END
-                                                              └→ END   (no plant spec for this product)
+START → load_document → get_document_data → load_plant_spec ─┬→ compare_specs → render_ui → END
+                                                              └──────────────→ render_ui → END   (no plant spec)
 ```
 
 | Node | Uses a model? | What it does |
@@ -33,6 +34,7 @@ START → load_document → get_document_data → load_plant_spec ─┬→ comp
 | `get_document_data` | yes | Extracts the CoA into a structured schema: header (certificate, product, lot, dates, PO, quantities), one row per test (specification, method, result, unit, supplier status) and the conclusion. The prompt asks for verbatim values and `null` for anything not stated. |
 | `load_plant_spec` | no | Looks up the CoA's `product_code` in `docs/plant_specs.json`. If there is no entry, it records a `missing_plant_spec` issue and the graph ends without calling the model. |
 | `compare_specs` | yes | Sends the plant requirements and the CoA results (`test`, `result`, `unit` only, so the supplier's own limits and pass/fail can't bias the judgement) to the model with a dedicated prompt. It returns one verdict per plant test: `pass`, `fail` or `review`. |
+| `render_ui` | yes | Last node. Sends the header, the per-test verdicts and the issues to the model with a prompt that lists the available components (Stack, Grid, Card, Separator, Heading, Text, Badge, Alert, Table) and how to lay out the page. The reply is a [json-render](https://github.com/vercel-labs/json-render) spec stored in `ui_spec`. Invalid JSON is retried once, then replaced by an error Alert. |
 
 Rules in the comparison prompt: judge against the plant requirements only; limits are inclusive; a `< x`
 result passes a `max` limit only if x ≤ max and can't be confirmed against a `min` limit; a unit mismatch is
@@ -62,13 +64,14 @@ test missing from the CoA is `fail` ("not reported").
 | `plant_spec` | plant requirements for the CoA's product code |
 | `test_checks` | one verdict per plant test, with the supplier result and plant requirement |
 | `issues` | non-passing checks and missing-spec problems (see `schema.Issue`) |
+| `ui_spec` | json-render spec of the report page |
 | `messages`, `is_running`, `is_paused`, `report` | present but not used yet |
 
 ## Repository layout
 
 ```
 backend/
-  agent/            LangGraph graph (agent.py) and state (state.py)
+  agent/            LangGraph graph (agent.py), prompts (prompts.py) and state (state.py)
   schema/           Pydantic models: CoA extraction, check verdicts, issues (schema.py)
   docs/             sample CoAs and the plant specification
     sample_coa_citric_acid.pdf    conforming CoA (should produce no issues)
@@ -77,7 +80,9 @@ backend/
   scripts/eval_compare.py         end-to-end check against the real model
   tests/                          unit tests (mocked model)
   main.py                         FastAPI app (health check only)
-frontend/           Next.js + shadcn dashboard scaffold
+frontend/           Next.js + shadcn dashboard; app/page.tsx renders fixtures/ui_spec.json inside <main>
+  components/report-renderer.tsx   json-render catalog + registry (shadcn components)
+  fixtures/ui_spec.json            sample report spec (defective CoA)
 ```
 
 ### Plant specification format
@@ -138,6 +143,16 @@ Frontend:
 cd frontend && npm install && npm run dev
 ```
 
+The home page renders the report from `frontend/fixtures/ui_spec.json` (imported statically, so the dev server
+reloads it when the file changes). To show another CoA, run the agent with `--ui-out`:
+
+```bash
+cd backend && .venv/bin/python -m agent.agent docs/sample_coa_defective.pdf --ui-out ../frontend/fixtures/ui_spec.json
+```
+
+The component list in `RENDER_UI_PROMPT` (`backend/agent/prompts.py`) and the catalog in
+`frontend/components/report-renderer.tsx` must be kept in sync by hand.
+
 ## Testing
 
 ```bash
@@ -158,3 +173,5 @@ verdict differs from the expected one.
 - Numeric comparison is done by the model. The retry and the eval script exist to guard it; doing the numeric
   tests in Python and sending only qualitative rows to the model is a possible next step.
 - Test names on the CoA must match the plant specification exactly; there is no fuzzy matching yet.
+- The report UI is written by the model, so values in it are retyped by the model. The verdicts and issues stay in state
+  from `compare_specs`; the page is a display layer. The frontend validates the spec against its catalog before rendering.
