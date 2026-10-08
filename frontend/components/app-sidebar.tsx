@@ -1,6 +1,4 @@
 import { LayoutDashboard, Settings } from "lucide-react";
-
-import { UploadButton } from "@/components/upload-button";
 import {
   Sidebar,
   SidebarContent,
@@ -13,19 +11,16 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
+import { UploadButton } from "@/components/upload-button";
 
-const main = [
-  { title: "Runs", icon: LayoutDashboard, active: true },
-];
+const main = [{ title: "Runs", icon: LayoutDashboard, active: true }];
 
 export function AppSidebar() {
   return (
     <Sidebar>
       <SidebarHeader>
         <div className="flex items-center gap-2 px-2 py-1.5 font-semibold">
-          <div className="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-md text-sm">
-            C
-          </div>
+          <div className="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-md text-sm">C</div>
           COA Agent
         </div>
         <UploadButton />

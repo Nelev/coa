@@ -4,7 +4,13 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome check --formatter-enabled=false .",
+    "check": "biome ci .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
@@ -22,12 +28,15 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.15",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^26.6.4",
     "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "babel-plugin-react-compiler": "^1.0.0",
     "postcss": "^8.5.29",
     "tailwindcss": "^4.3.3",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
   }
 }
