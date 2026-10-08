@@ -1,0 +1,30 @@
+{
+  "plant": "Nordval Foods Plant 2",
+  "materials": {
+    "CA-ANH-25": {
+      "name": "Citric Acid Anhydrous",
+      "specification_ref": "NF-SPEC-0231 rev. 4",
+      "approved_suppliers": ["Alpina Chemicals S.p.A."],
+      "min_remaining_shelf_life_days": 180,
+      "tests": [
+        {"test": "Appearance", "type": "qualitative", "accepted": ["conforms", "complies"], "requirement": "White crystalline powder or colourless crystals"},
+        {"test": "Identification (A, B)", "type": "qualitative", "accepted": ["complies"], "requirement": "Complies"},
+        {"test": "Assay (anhydrous basis)", "type": "numeric", "min": 99.5, "max": 100.5, "unit": "%"},
+        {"test": "Water (Karl Fischer)", "type": "numeric", "max": 0.4, "unit": "%"},
+        {"test": "Sulfated ash", "type": "numeric", "max": 0.05, "unit": "%"},
+        {"test": "Oxalic acid", "type": "numeric", "max": 360, "unit": "ppm"},
+        {"test": "Sulfate", "type": "numeric", "max": 150, "unit": "ppm"},
+        {"test": "Readily carbonisable substances", "type": "qualitative", "accepted": ["complies"], "requirement": "Not more intense than reference"},
+        {"test": "Heavy metals (as Pb)", "type": "numeric", "max": 10, "unit": "ppm"},
+        {"test": "Lead (Pb)", "type": "numeric", "max": 0.3, "unit": "ppm"},
+        {"test": "Arsenic (As)", "type": "numeric", "max": 0.5, "unit": "ppm"},
+        {"test": "Bulk density", "type": "numeric", "min": 0.80, "max": 0.95, "unit": "g/mL"},
+        {"test": "Particle size, > 850 µm", "type": "numeric", "max": 3, "unit": "%"},
+        {"test": "Particle size, < 150 µm", "type": "numeric", "max": 5, "unit": "%"},
+        {"test": "Bacterial endotoxins", "type": "numeric", "max": 0.5, "unit": "IU/mg"},
+        {"test": "Total aerobic microbial count", "type": "numeric", "max": 100, "unit": "CFU/g"},
+        {"test": "Yeasts and moulds", "type": "numeric", "max": 10, "unit": "CFU/g"}
+      ]
+    }
+  }
+}
