@@ -1,7 +1,7 @@
 import { DollarSign, ShoppingCart, TrendingUp, Users } from "lucide-react";
 
 import { AppSidebar } from "@/components/app-sidebar";
-import { ReportRenderer } from "@/components/report-renderer";
+import { ReportView } from "@/components/report-view";
 import { RevenueChart } from "@/components/revenue-chart";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -14,8 +14,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
-// Dev fixture written by `python -m agent.agent <pdf> --ui-out ../frontend/fixtures/ui_spec.json`.
-import uiSpec from "@/fixtures/ui_spec.json";
 import {
   Card,
   CardContent,
@@ -80,7 +78,7 @@ export default function Home() {
         </header>
 
         <main className="flex flex-1 flex-col gap-4 p-4 md:p-6">
-          <ReportRenderer spec={uiSpec} />
+          <ReportView />
         </main>
       </SidebarInset>
     </SidebarProvider>
