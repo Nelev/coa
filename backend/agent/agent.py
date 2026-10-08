@@ -170,13 +170,10 @@ app = graph.compile()
 
 
 if __name__ == "__main__":
-    import argparse
+    import sys
 
-    parser = argparse.ArgumentParser(description="Check a supplier CoA against the plant specification.")
-    parser.add_argument("pdf", nargs="?", default=str(DOCS_DIR / "sample_coa_citric_acid.pdf"))
-    parser.add_argument("--ui-out", type=Path, help="write the report UI spec (json-render) to this file")
-    args = parser.parse_args()
-    result = app.invoke({"document_path": args.pdf})
+    default_doc = DOCS_DIR / "sample_coa_citric_acid.pdf"
+    result = app.invoke({"document_path": sys.argv[1] if len(sys.argv) > 1 else str(default_doc)})
 
     print("== Header ==")
     for key, value in result["supplier_materials"].items():
@@ -191,7 +188,3 @@ if __name__ == "__main__":
     print(f"\n== Issues ({len(result['issues'])}) ==")
     for issue in result["issues"]:
         print(f"[{issue['severity']}] {issue['test'] or '-'}: {issue['message']}")
-
-    if args.ui_out:
-        args.ui_out.write_text(json.dumps(result["ui_spec"], indent=2, ensure_ascii=False) + "\n")
-        print(f"\nwrote the UI spec to {args.ui_out}")

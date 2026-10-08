@@ -10,12 +10,12 @@ and checks the reported results against the **plant's own specification** for th
 | PDF text extraction | done |
 | Structured extraction of the CoA (LLM) | done |
 | Comparison against plant specs (LLM) → `issues` | done |
-| Report page: model lays out the results as a json-render UI spec, rendered by the frontend | done (reads a dev fixture) |
+| Report page: model lays out the results as a json-render UI spec, rendered by the frontend | done |
 | Supplier-approval and shelf-life checks | not started |
 | `report` node (prose summary of the issues) | not started |
 | Pause / resume (`is_running`, `is_paused`) | state fields only, not wired |
-| API endpoint for the agent | not started (`backend/main.py` only has `/health`) |
-| Frontend (Next.js + shadcn dashboard) | renders the report from a fixture file; not connected to the agent API |
+| API endpoint: `POST /analyze` runs the agent on an uploaded PDF and returns the UI spec | done (CORS allows `http://localhost:3000` only) |
+| Frontend (Next.js + shadcn dashboard) | sidebar button uploads a PDF to `POST /analyze` and renders the returned report |
 
 The plant limits in `backend/docs/plant_specs.json` are **placeholder values**, not real plant requirements.
 
@@ -67,9 +67,60 @@ test missing from the CoA is `fail` ("not reported").
 | `ui_spec` | json-render spec of the report page |
 | `messages`, `is_running`, `is_paused`, `report` | present but not used yet |
 
+## The report UI (json-render)
+
+The report page is not hand-built for each CoA. The last graph node, `render_ui`, asks the model to **design the page**
+as a [json-render](https://github.com/vercel-labs/json-render) spec, and the frontend renders that spec with React.
+
+json-render is a generative-UI framework. Instead of writing HTML or React, the model returns a JSON document that
+can only use components from a **catalog**; the frontend maps each catalog component to a React implementation (the
+**registry**) and renders it. A spec is a flat map of elements with a root:
+
+```json
+{
+  "root": "page",
+  "elements": {
+    "page":  {"type": "Stack", "props": {"direction": "vertical", "gap": "lg", "align": "stretch"},
+              "children": ["title", "badge"]},
+    "title": {"type": "Heading", "props": {"text": "Citric Acid Anhydrous, Lot L26-09-3402", "level": "h1"}, "children": []},
+    "badge": {"type": "Badge", "props": {"text": "Non-conforming", "variant": "destructive"}, "children": []}
+  }
+}
+```
+
+(abridged: a real spec has about 25 elements)
+
+How the pieces fit:
+
+| Step | Where | What happens |
+|---|---|---|
+| 1. Prompt | `RENDER_UI_PROMPT` in `backend/agent/prompts.py` | Lists the available components and their props (Stack, Grid, Card, Separator, Heading, Text, Badge, Alert, Table) and says how to build the page: outcome badge and recommendation, certificate card, findings as Alerts (critical first), the results table, and a "not assessed" note. The model gets only the header, the per-test verdicts and the issues, and must copy values exactly. |
+| 2. Node | `render_ui` in `backend/agent/agent.py` | Sends the prompt, parses the JSON reply (fenced or not) and stores it as `ui_spec`. Invalid replies are retried once with the error, then replaced by an error Alert. |
+| 3. API | `POST /analyze` in `backend/main.py` | Runs the whole graph on an uploaded PDF and returns the `ui_spec`. |
+| 4. Upload | `frontend/components/upload-button.tsx`, `report-context.tsx` | The **Upload document** button in the sidebar posts the PDF to the API and keeps the report state (idle, loading, error, done). |
+| 5. Render | `frontend/components/report-renderer.tsx` | Validates the spec against the catalog (the same nine components, taken from `@json-render/shadcn`) and renders it inside the page's `<main>`. An invalid spec shows an error message instead of rendering. |
+
+The renderer (json-render, the shadcn components and zod) is loaded on demand with `next/dynamic` and preloaded when an
+upload starts, so the idle page does not download it.
+
+### What it looks like
+
+The report for `backend/docs/sample_coa_defective.pdf`: the outcome, the recommendation (the release decision always
+stays with QA), and the certificate details.
+
+![Report summary: non-conforming outcome, recommendation and certificate details](docs/images/report-summary.jpg)
+
+The findings (critical in red, warnings in yellow) and the results table with one verdict per plant test.
+
+![Report findings and results table](docs/images/report-findings.jpg)
+
+To generate it yourself, start the backend and the frontend (see [Running it](#running-it)), click **Upload document**
+and pick a CoA PDF. The report appears after about a minute.
+
 ## Repository layout
 
 ```
+docs/images/        screenshots used in this README
 backend/
   agent/            LangGraph graph (agent.py), prompts (prompts.py) and state (state.py)
   schema/           Pydantic models: CoA extraction, check verdicts, issues (schema.py)
@@ -79,10 +130,12 @@ backend/
     plant_specs.json              plant requirements per product code
   scripts/eval_compare.py         end-to-end check against the real model
   tests/                          unit tests (mocked model)
-  main.py                         FastAPI app (health check only)
-frontend/           Next.js + shadcn dashboard; app/page.tsx renders fixtures/ui_spec.json inside <main>
+  main.py                         FastAPI app: /health and POST /analyze
+frontend/           Next.js + shadcn dashboard; app/page.tsx shows the report inside <main>
+  components/upload-button.tsx     sidebar button: picks a PDF and sends it to the API
+  components/report-context.tsx    report state (idle / loading / error / done) and the POST /analyze call
+  components/report-view.tsx       what <main> shows for each state
   components/report-renderer.tsx   json-render catalog + registry (shadcn components)
-  fixtures/ui_spec.json            sample report spec (defective CoA)
 ```
 
 ### Plant specification format
@@ -131,10 +184,17 @@ every plant test, and the list of issues. On the defective sample the issues are
 | Lead (Pb) | `< 0.5`: can't be confirmed against max 0.3 | warning |
 | Appearance | "Slightly yellow powder": not an accepted result | warning |
 
-Backend API (currently just `/health`):
+Backend API (`GET /health`, `POST /analyze`):
 
 ```bash
 cd backend && .venv/bin/uvicorn main:app --reload
+```
+
+`POST /analyze` takes a PDF as multipart form data (field `file`), runs the agent on it and returns the report's
+json-render UI spec. A run takes a minute or more, because the agent makes several model calls.
+
+```bash
+curl -F "file=@docs/sample_coa_defective.pdf" localhost:8000/analyze -o spec.json
 ```
 
 Frontend:
@@ -143,12 +203,9 @@ Frontend:
 cd frontend && npm install && npm run dev
 ```
 
-The home page renders the report from `frontend/fixtures/ui_spec.json` (imported statically, so the dev server
-reloads it when the file changes). To show another CoA, run the agent with `--ui-out`:
-
-```bash
-cd backend && .venv/bin/python -m agent.agent docs/sample_coa_defective.pdf --ui-out ../frontend/fixtures/ui_spec.json
-```
+Start the backend (see above) and the frontend, then click **Upload document** in the sidebar and pick a CoA PDF
+(for example `backend/docs/sample_coa_defective.pdf`). The report appears in the page after about a minute. The
+frontend calls `http://localhost:8000`; set `NEXT_PUBLIC_API_URL` to use another address.
 
 The component list in `RENDER_UI_PROMPT` (`backend/agent/prompts.py`) and the catalog in
 `frontend/components/report-renderer.tsx` must be kept in sync by hand.

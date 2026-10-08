@@ -1,5 +1,6 @@
 import { LayoutDashboard, Settings } from "lucide-react";
 
+import { UploadButton } from "@/components/upload-button";
 import {
   Sidebar,
   SidebarContent,
@@ -27,6 +28,7 @@ export function AppSidebar() {
           </div>
           COA Agent
         </div>
+        <UploadButton />
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
