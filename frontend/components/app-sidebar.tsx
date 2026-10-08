@@ -1,10 +1,4 @@
-import {
-  BarChart3,
-  LayoutDashboard,
-  Settings,
-  ShoppingCart,
-  Users,
-} from "lucide-react";
+import { LayoutDashboard, Settings } from "lucide-react";
 
 import {
   Sidebar,
