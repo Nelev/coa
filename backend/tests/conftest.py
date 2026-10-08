@@ -38,3 +38,17 @@ def fake_llm(monkeypatch):
         return llm
 
     return install
+
+
+@pytest.fixture(autouse=True)
+def stream_writer_outside_a_graph(monkeypatch):
+    """The nodes report their status with get_stream_writer(), which only works inside a graph run: elsewhere it is a no-op."""
+    real = agent.get_stream_writer
+
+    def get_stream_writer():
+        try:
+            return real()
+        except RuntimeError:
+            return lambda _: None
+
+    monkeypatch.setattr(agent, "get_stream_writer", get_stream_writer)

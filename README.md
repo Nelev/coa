@@ -99,7 +99,7 @@ How the pieces fit:
 |---|---|---|
 | 1. Prompt | `RENDER_UI_PROMPT` in `backend/agent/prompts.py` | Lists the available components and their props (Stack, Grid, Card, Separator, Heading, Text, Badge, Alert, Table) and says how to build the page: outcome badge and recommendation, certificate card, findings as Alerts (critical first), the results table, and a "not assessed" note. The model gets only the header, the per-test verdicts and the issues, and must copy values exactly. |
 | 2. Node | `render_ui` in `backend/agent/agent.py` | Sends the prompt, parses the JSON reply (fenced or not) and stores it as `ui_spec`. Invalid replies are retried once with the error, then replaced by an error Alert. |
-| 3. API | `POST /analyze` in `backend/main.py` | Runs the whole graph on an uploaded PDF, streams each step's start, its one-line output and its finish (with the duration), then the `ui_spec`. |
+| 3. API | `POST /analyze` in `backend/main.py` | Runs the whole graph on an uploaded PDF, streams what each node is doing, then the `ui_spec`. |
 | 4. Upload | `frontend/components/upload-button.tsx`, `report-context.tsx` | The **Upload document** button in the sidebar posts the PDF to the API and keeps the report state (idle, loading, error, done). |
 | 5. Render | `frontend/components/report-renderer.tsx` | Validates the spec against the catalog (the same nine components, taken from `@json-render/shadcn`) and renders it inside the page's `<main>`. An invalid spec shows an error message instead of rendering. |
 
@@ -136,8 +136,8 @@ backend/
   main.py                         FastAPI app: /health and POST /analyze
 frontend/           Next.js + shadcn dashboard; app/page.tsx shows the report inside <main>
   components/upload-button.tsx     sidebar button: picks a PDF and sends it to the API
-  components/report-context.tsx    report state (idle / loading / error / done), the per-step timings and the POST /analyze call
-  components/report-view.tsx       what <main> shows for each state, including the step checklist with live and final durations
+  components/report-context.tsx    report state (idle / loading / error / done), the statuses from the stream and the POST /analyze call
+  components/report-view.tsx       what <main> shows for each state, including the list of statuses and the elapsed time
   components/report-renderer.tsx   json-render catalog + registry (shadcn components)
 ```
 
@@ -195,18 +195,18 @@ cd backend && .venv/bin/uvicorn main:app --reload
 
 `POST /analyze` takes a PDF as multipart form data (field `file`) and runs the agent on it. A run takes a minute or
 more, because the agent makes several model calls, so the response is a stream of JSON lines (NDJSON) built from
-LangGraph's `tasks` and `custom` stream modes:
+LangGraph's `updates` and `custom` stream modes (`stream_mode=["updates", "custom"], version="v2"`):
 
 | Line | Meaning |
 |---|---|
-| `{"start": "<node>"}` | the step is about to run |
-| `{"output": "...", "node": "<node>"}` | the step reported one display line about what it produced. Each node writes it with LangGraph's stream writer (`writer(...)`, received as an argument), which arrives in the `custom` stream mode; the raw node output is not sent, because it includes the whole PDF text and UI spec |
-| `{"step": "<node>", "ms": 1840}` | the step finished after `ms` milliseconds |
-| `{"done": <json-render UI spec>}` | the report; the last line of a successful run |
+| `{"status": "Reading the PDF"}` | the running node says what it is doing. Each node calls `_status(...)` first thing, which writes `{"status": ...}` with LangGraph's `get_stream_writer()`; it arrives in the `custom` stream mode |
+| `{"done": <json-render UI spec>}` | the report; the last line of a successful run. It is taken from the `updates` stream mode, where `render_ui` returns `ui_spec`; the other node updates are not sent, because they include the whole PDF text |
 | `{"error": "..."}` | the run failed |
 
-Steps the graph routes around (for example everything between `validate_document` and `render_ui` for a document that
-is not a CoA) send no lines, and the frontend shows them as skipped.
+The frontend shows the `status` lines in arrival order and knows nothing about the graph. Nodes the graph routes around
+(for example everything between `validate_document` and `render_ui` for a document that is not a CoA) send no status,
+so they do not appear. `get_stream_writer()` only works inside a graph run, so the unit tests make it a no-op
+(`tests/conftest.py`).
 
 ```bash
 curl -N -F "file=@docs/sample_coa_defective.pdf" localhost:8000/analyze

@@ -95,21 +95,3 @@ def test_render_ui_falls_back_to_an_error_alert(fake_llm):
     fake_llm("not json", '{"root": "missing", "elements": {}}')
     spec = agent.render_ui({"issues": []})["ui_spec"]
     assert spec["elements"][spec["root"]]["type"] == "Alert"
-
-
-def test_compare_specs_reports_what_it_checked_to_the_stream(fake_llm):
-    fake_llm([check("Assay"), check("Water", "fail")])
-    lines = []
-    agent.compare_specs(STATE, writer=lines.append)
-    assert lines == ["2 tests checked, 1 issues"]
-
-
-def test_load_plant_spec_reports_the_material_or_the_missing_spec(monkeypatch, tmp_path):
-    specs = tmp_path / "specs.json"
-    specs.write_text('{"materials": {"CA-ANH-25": {"name": "Citric Acid", "tests": []}}}')
-    monkeypatch.setattr(agent, "PLANT_SPECS_PATH", specs)
-    lines = []
-    agent.load_plant_spec({"supplier_materials": {"product_code": "CA-ANH-25"}}, writer=lines.append)
-    agent.load_plant_spec({"supplier_materials": {"product_code": "NOPE"}}, writer=lines.append)
-    assert lines[0] == "Citric Acid"
-    assert "NOPE" in lines[1]
