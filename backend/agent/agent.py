@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from langchain_core.utils.json import parse_json_markdown
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import StreamWriter
 from pypdf import PdfReader
 
 from schema.schema import CoAData, ComparisonResult, DocumentCheck, Issue, TestCheck
@@ -33,6 +34,10 @@ PLANT_SPECS_PATH = DOCS_DIR / "plant_specs.json"
 VERDICT_ISSUE = {"fail": ("non_conforming", "critical"), "review": ("needs_review", "warning")}
 
 
+def _no_writer(_) -> None:
+    """Default for the `writer` argument of the nodes, so they can also be called outside a graph run."""
+
+
 @lru_cache
 def get_llm() -> ChatOpenAI:
     return ChatOpenAI(
@@ -42,10 +47,11 @@ def get_llm() -> ChatOpenAI:
     )
 
 
-def load_document(state: AgentState) -> dict:
+def load_document(state: AgentState, writer: StreamWriter = _no_writer) -> dict:
     """Extract the text of the PDF at `document_path`."""
     reader = PdfReader(state["document_path"])
     text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    writer(f"{len(text):,} characters read")
     return {"document_text": text}
 
 
@@ -53,13 +59,14 @@ def _not_a_coa(state: AgentState) -> dict | None:
     return next((i for i in state.get("issues", []) if i["kind"] == "not_a_coa"), None)
 
 
-def validate_document(state: AgentState) -> dict:
+def validate_document(state: AgentState, writer: StreamWriter = _no_writer) -> dict:
     """Check that the document is a CoA; if not, record a `not_a_coa` issue."""
     text = state["document_text"]
     if text.strip():
         check = get_llm().with_structured_output(DocumentCheck).invoke(VALIDATE_PROMPT + text[:VALIDATION_CHARS])
     else:
         check = DocumentCheck(is_coa=False, reason="The PDF has no extractable text (it may be a scan).")
+    writer(check.reason)
     if check.is_coa:
         return {}
     return {"issues": [Issue(kind="not_a_coa", severity="critical", message=check.reason).model_dump()]}
@@ -69,9 +76,10 @@ def route_after_validation(state: AgentState) -> str:
     return "render_ui" if _not_a_coa(state) else "get_document_data"
 
 
-def get_document_data(state: AgentState) -> dict:
+def get_document_data(state: AgentState, writer: StreamWriter = _no_writer) -> dict:
     """Extract the CoA header, specifications and reported results from the document text."""
     coa = get_llm().with_structured_output(CoAData).invoke(EXTRACTION_PROMPT + state["document_text"])
+    writer(f"{len(coa.tests)} tests, lot {coa.header.lot_number}")
 
     return {
         "supplier_materials": {k: v for k, v in coa.header.model_dump().items() if v is not None},
@@ -85,14 +93,16 @@ def _load_plant_specs(path: Path) -> dict:
     return json.loads(path.read_text())["materials"]
 
 
-def load_plant_spec(state: AgentState) -> dict:
+def load_plant_spec(state: AgentState, writer: StreamWriter = _no_writer) -> dict:
     """Select the plant requirements for the CoA's product code."""
     product_code = state["supplier_materials"].get("product_code")
     material = _load_plant_specs(PLANT_SPECS_PATH).get(product_code)
     if material is None:
         issue = Issue(kind="missing_plant_spec", severity="critical",
                       message=f"No plant specification found for product code {product_code!r}.")
+        writer(issue.message)
         return {"issues": [issue.model_dump()]}
+    writer(material["name"])
     return {"plant_spec": material}
 
 
@@ -115,7 +125,7 @@ def _ask(llm, prompt: str) -> dict[str, TestCheck]:
     return {c.test: c for c in llm.invoke(prompt).checks}
 
 
-def compare_specs(state: AgentState) -> dict:
+def compare_specs(state: AgentState, writer: StreamWriter = _no_writer) -> dict:
     """Ask the model to compare each CoA result with the plant requirements, then derive issues."""
     plant_tests = state["plant_spec"]["tests"]
     expected = {t["test"] for t in plant_tests}
@@ -144,10 +154,11 @@ def compare_specs(state: AgentState) -> dict:
         if check.verdict != "pass":
             kind, severity = VERDICT_ISSUE[check.verdict]
             issues.append(Issue(kind=kind, severity=severity, message=check.reason, test=name, **details).model_dump())
+    writer(f"{len(test_checks)} tests checked, {len(issues)} issues")
     return {"test_checks": test_checks, "issues": issues}
 
 
-def render_ui(state: AgentState) -> dict:
+def render_ui(state: AgentState, writer: StreamWriter = _no_writer) -> dict:
     """Ask the model to lay out the results as a json-render UI spec (no model call for a document that is not a CoA)."""
     if rejection := _not_a_coa(state):
         return {"ui_spec": _alert_spec("This document is not a Certificate of Analysis", rejection["message"])}
@@ -168,6 +179,7 @@ def render_ui(state: AgentState) -> dict:
             feedback = f"\n\nYour previous reply was not valid JSON ({error}). Reply with only the JSON object."
             continue
         if isinstance(spec, dict) and isinstance(spec.get("elements"), dict) and spec.get("root") in spec["elements"]:
+            writer(f"{len(spec['elements'])} elements")
             return {"ui_spec": spec}
         feedback = "\n\nYour previous reply was not a spec with a \"root\" key that exists in \"elements\". Reply with only the JSON object."
     return {"ui_spec": FALLBACK_UI_SPEC}
