@@ -1,13 +1,11 @@
 import { AppSidebar } from "@/components/app-sidebar";
 import { ReportView } from "@/components/report-view";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   Breadcrumb,
   BreadcrumbItem,
   BreadcrumbList,
   BreadcrumbPage,
 } from "@/components/ui/breadcrumb";
-import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 
@@ -26,12 +24,6 @@ export default function Home() {
               </BreadcrumbItem>
             </BreadcrumbList>
           </Breadcrumb>
-          <div className="ml-auto flex items-center gap-3">
-            <Input placeholder="Search..." className="hidden w-56 sm:block" />
-            <Avatar>
-              <AvatarFallback>MS</AvatarFallback>
-            </Avatar>
-          </div>
         </header>
 
         <main className="flex flex-1 flex-col gap-4 p-4 md:p-6">

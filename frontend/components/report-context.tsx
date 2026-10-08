@@ -13,7 +13,7 @@ type Report =
   | { status: "idle" }
   | ({ status: "loading" } & Run)
   | { status: "error"; message: string; run?: Run } // run: how far the agent got, if the stream had started
-  | { status: "done"; spec: unknown };
+  | ({ status: "done"; spec: unknown } & Run); // the finished steps are kept next to the report
 
 // An error line or a dropped connection means the step that was running is the one that failed.
 function failRunning(steps: Steps): Steps {
@@ -60,7 +60,7 @@ export function ReportProvider({ children }: { children: ReactNode }) {
             } else if ("error" in event) {
               throw new Error(event.error);
             } else if ("done" in event) {
-              setReport({ status: "done", spec: event.done });
+              setReport((r) => (r.status === "loading" ? { ...r, status: "done", spec: event.done } : r));
               return;
             }
           }

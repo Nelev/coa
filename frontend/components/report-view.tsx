@@ -104,6 +104,11 @@ export function ReportView() {
         </div>
       );
     case "done":
-      return <ReportRenderer spec={report.spec} />;
+      return (
+        <div className="flex flex-col gap-6">
+          <Progress filename={report.filename} startedAt={report.startedAt} steps={report.steps} active={false} />
+          <ReportRenderer spec={report.spec} />
+        </div>
+      );
   }
 }
