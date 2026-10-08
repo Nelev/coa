@@ -20,6 +20,7 @@ defaults:
 
 jobs:
   ci:
+    name: Frontend
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

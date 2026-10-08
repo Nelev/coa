@@ -242,7 +242,7 @@ verdict differs from the expected one.
 GitHub Actions run on every pull request and on pushes to `main` (`.github/workflows/`). Each workflow only runs when
 its own folder changes. The same steps run locally:
 
-| | Backend (`backend/`, Python 3.10 and 3.14) | Frontend (`frontend/`, Node 24) |
+| | Backend (`backend/`, Python 3.14) | Frontend (`frontend/`, Node 24) |
 |---|---|---|
 | Format | `.venv/bin/ruff format .` | `npm run format` |
 | Lint | `.venv/bin/ruff check .` | `npm run lint` (Biome) |
