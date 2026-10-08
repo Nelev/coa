@@ -9,23 +9,22 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from pypdf import PdfReader
 
-from schema.schema import CoAData, ComparisonResult, Issue, TestCheck
-from .prompts import COMPARE_PROMPT, EXTRACTION_PROMPT, RENDER_UI_PROMPT
+from schema.schema import CoAData, ComparisonResult, DocumentCheck, Issue, TestCheck
+from .prompts import COMPARE_PROMPT, EXTRACTION_PROMPT, RENDER_UI_PROMPT, VALIDATE_PROMPT
 from .state import AgentState
 
 load_dotenv()
 
 
-FALLBACK_UI_SPEC = {
-    "root": "error",
-    "elements": {
-        "error": {
-            "type": "Alert",
-            "props": {"title": "The report could not be generated", "message": "The model did not return a valid layout. Run the agent again.", "type": "error"},
-            "children": [],
-        }
-    },
-}
+def _alert_spec(title: str, message: str) -> dict:
+    """A json-render spec holding a single error Alert."""
+    alert = {"title": title, "message": message, "type": "error"}
+    return {"root": "alert", "elements": {"alert": {"type": "Alert", "props": alert, "children": []}}}
+
+
+FALLBACK_UI_SPEC = _alert_spec("The report could not be generated", "The model did not return a valid layout. Run the agent again.")
+
+VALIDATION_CHARS = 6000  # the start of a document is enough to tell what kind it is
 
 DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
 PLANT_SPECS_PATH = DOCS_DIR / "plant_specs.json"
@@ -48,6 +47,26 @@ def load_document(state: AgentState) -> dict:
     reader = PdfReader(state["document_path"])
     text = "\n".join(page.extract_text() or "" for page in reader.pages)
     return {"document_text": text}
+
+
+def _not_a_coa(state: AgentState) -> dict | None:
+    return next((i for i in state.get("issues", []) if i["kind"] == "not_a_coa"), None)
+
+
+def validate_document(state: AgentState) -> dict:
+    """Check that the document is a CoA; if not, record a `not_a_coa` issue."""
+    text = state["document_text"]
+    if text.strip():
+        check = get_llm().with_structured_output(DocumentCheck).invoke(VALIDATE_PROMPT + text[:VALIDATION_CHARS])
+    else:
+        check = DocumentCheck(is_coa=False, reason="The PDF has no extractable text (it may be a scan).")
+    if check.is_coa:
+        return {}
+    return {"issues": [Issue(kind="not_a_coa", severity="critical", message=check.reason).model_dump()]}
+
+
+def route_after_validation(state: AgentState) -> str:
+    return "render_ui" if _not_a_coa(state) else "get_document_data"
 
 
 def get_document_data(state: AgentState) -> dict:
@@ -129,7 +148,9 @@ def compare_specs(state: AgentState) -> dict:
 
 
 def render_ui(state: AgentState) -> dict:
-    """Ask the model to lay out the results as a json-render UI spec."""
+    """Ask the model to lay out the results as a json-render UI spec (no model call for a document that is not a CoA)."""
+    if rejection := _not_a_coa(state):
+        return {"ui_spec": _alert_spec("This document is not a Certificate of Analysis", rejection["message"])}
     data = {
         "header": state.get("supplier_materials", {}),
         "tests": [
@@ -155,9 +176,11 @@ def render_ui(state: AgentState) -> dict:
 graph = StateGraph(AgentState)
 
 graph.add_node("load_document", load_document)
+graph.add_node("validate_document", validate_document)
 graph.add_node("get_document_data", get_document_data)
 graph.add_edge(START, "load_document")
-graph.add_edge("load_document", "get_document_data")
+graph.add_edge("load_document", "validate_document")
+graph.add_conditional_edges("validate_document", route_after_validation, ["get_document_data", "render_ui"])
 graph.add_node("load_plant_spec", load_plant_spec)
 graph.add_node("compare_specs", compare_specs)
 graph.add_edge("get_document_data", "load_plant_spec")
@@ -176,15 +199,15 @@ if __name__ == "__main__":
     result = app.invoke({"document_path": sys.argv[1] if len(sys.argv) > 1 else str(default_doc)})
 
     print("== Header ==")
-    for key, value in result["supplier_materials"].items():
+    for key, value in result.get("supplier_materials", {}).items():
         print(f"{key}: {value}")
     print("\n== Tests (result | specification) ==")
-    for test in result["tests"]:
-        print(f"{test['test']}: {_supplier_result(test)} | {result['spec_values'].get(test['test'], '-')}")
+    for test in result.get("tests", []):
+        print(f"{test['test']}: {_supplier_result(test)} | {result.get('spec_values', {}).get(test['test'], '-')}")
 
     print("\n== Plant comparison ==")
     for check in result.get("test_checks", []):
         print(f"[{check['verdict'].upper():6}] {check['test']}: {check['reason']}")
-    print(f"\n== Issues ({len(result['issues'])}) ==")
-    for issue in result["issues"]:
+    print(f"\n== Issues ({len(result.get('issues', []))}) ==")
+    for issue in result.get("issues", []):
         print(f"[{issue['severity']}] {issue['test'] or '-'}: {issue['message']}")

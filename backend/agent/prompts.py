@@ -1,4 +1,14 @@
-# Prompts of the model-driven nodes: get_document_data, compare_specs and render_ui.
+# Prompts of the model-driven nodes: validate_document, get_document_data, compare_specs and render_ui.
+
+VALIDATE_PROMPT = (
+    "Decide whether the document below is a supplier Certificate of Analysis (CoA): a certificate issued by a "
+    "manufacturer or supplier for one lot of a material, with product and lot identification and a table of "
+    "analytical test results.\n"
+    "- Invoices, purchase orders, safety data sheets, technical data sheets, brochures and unrelated documents "
+    "are not CoAs.\n"
+    "- A CoA with missing or failing results is still a CoA; judge the kind of document, not its quality.\n\n"
+    "Document:\n"
+)
 
 EXTRACTION_PROMPT = (
     "You are reading a supplier Certificate of Analysis (CoA). Extract its data exactly as written.\n"

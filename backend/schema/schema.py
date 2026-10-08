@@ -17,6 +17,11 @@ Clean = Annotated[str, BeforeValidator(_collapse)]
 Unit = Annotated[str | None, BeforeValidator(_collapse_unit)]
 
 
+class DocumentCheck(BaseModel):
+    is_coa: bool = Field(description="True only if the document is a supplier Certificate of Analysis")
+    reason: str = Field(description="One short sentence saying what the document is and why it is or is not a CoA")
+
+
 class CoAHeader(BaseModel):
     certificate_number: Clean | None = Field(None, description="Certificate / CoA number")
     issue_date: Clean | None = Field(None, description="Certificate issue date, ISO format YYYY-MM-DD")
@@ -59,7 +64,7 @@ class ComparisonResult(BaseModel):
 
 
 class Issue(BaseModel):
-    kind: Literal["non_conforming", "needs_review", "missing_plant_spec"]
+    kind: Literal["not_a_coa", "non_conforming", "needs_review", "missing_plant_spec"]
     severity: Literal["critical", "warning"]
     message: str
     test: str | None = None
