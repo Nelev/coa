@@ -8,9 +8,11 @@ import { useReport } from "@/components/report-context";
 // json-render, its shadcn components and zod are only needed once a report arrives; upload() preloads this chunk.
 const ReportRenderer = dynamic(() => import("@/components/report-renderer").then((m) => m.ReportRenderer));
 
-// agent graph node -> label, in run order (compare_specs is skipped when the product has no plant spec)
+// agent graph node -> label, in run order
+// (compare_specs is skipped when the product has no plant spec; a document that is not a CoA skips to render_ui)
 const STEPS = [
   ["load_document", "Reading the PDF"],
+  ["validate_document", "Checking it is a CoA"],
   ["get_document_data", "Extracting the CoA data"],
   ["load_plant_spec", "Finding the plant specification"],
   ["compare_specs", "Comparing results with the specification"],

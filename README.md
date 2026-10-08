@@ -8,6 +8,7 @@ and checks the reported results against the **plant's own specification** for th
 | Part | State |
 |---|---|
 | PDF text extraction | done |
+| Validation that the document is a CoA (LLM), first step after reading the PDF | done |
 | Structured extraction of the CoA (LLM) | done |
 | Comparison against plant specs (LLM) → `issues` | done |
 | Report page: model lays out the results as a json-render UI spec, rendered by the frontend | done |
@@ -24,17 +25,19 @@ The plant limits in `backend/docs/plant_specs.json` are **placeholder values**, 
 The agent is a [LangGraph](https://langchain-ai.github.io/langgraph/) graph in `backend/agent/agent.py`:
 
 ```
-START → load_document → get_document_data → load_plant_spec ─┬→ compare_specs → render_ui → END
-                                                              └──────────────→ render_ui → END   (no plant spec)
+START → load_document → validate_document ─┬→ get_document_data → load_plant_spec ─┬→ compare_specs → render_ui → END
+                                           │                                       └──────────────→ render_ui → END   (no plant spec)
+                                           └───────────────────────────────────────────────────────→ render_ui → END   (not a CoA)
 ```
 
 | Node | Uses a model? | What it does |
 |---|---|---|
 | `load_document` | no | Extracts the text of the PDF at `document_path` with `pypdf`. |
+| `validate_document` | yes | Asks the model whether the start of the text is a supplier CoA. If not, or if the PDF has no extractable text, it records a critical `not_a_coa` issue and the graph skips to `render_ui`. |
 | `get_document_data` | yes | Extracts the CoA into a structured schema: header (certificate, product, lot, dates, PO, quantities), one row per test (specification, method, result, unit, supplier status) and the conclusion. The prompt asks for verbatim values and `null` for anything not stated. |
 | `load_plant_spec` | no | Looks up the CoA's `product_code` in `docs/plant_specs.json`. If there is no entry, it records a `missing_plant_spec` issue and the graph ends without calling the model. |
 | `compare_specs` | yes | Sends the plant requirements and the CoA results (`test`, `result`, `unit` only, so the supplier's own limits and pass/fail can't bias the judgement) to the model with a dedicated prompt. It returns one verdict per plant test: `pass`, `fail` or `review`. |
-| `render_ui` | yes | Last node. Sends the header, the per-test verdicts and the issues to the model with a prompt that lists the available components (Stack, Grid, Card, Separator, Heading, Text, Badge, Alert, Table) and how to lay out the page. The reply is a [json-render](https://github.com/vercel-labs/json-render) spec stored in `ui_spec`. Invalid JSON is retried once, then replaced by an error Alert. |
+| `render_ui` | yes | Last node. Sends the header, the per-test verdicts and the issues to the model with a prompt that lists the available components (Stack, Grid, Card, Separator, Heading, Text, Badge, Alert, Table) and how to lay out the page. The reply is a [json-render](https://github.com/vercel-labs/json-render) spec stored in `ui_spec`. Invalid JSON is retried once, then replaced by an error Alert. For a document that is not a CoA it skips the model and returns a fixed error Alert. |
 
 Rules in the comparison prompt: judge against the plant requirements only; limits are inclusive; a `< x`
 result passes a `max` limit only if x ≤ max and can't be confirmed against a `min` limit; a unit mismatch is

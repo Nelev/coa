@@ -1,7 +1,3 @@
-from types import SimpleNamespace
-
-import pytest
-
 from agent import agent
 from schema import schema
 
@@ -22,33 +18,6 @@ STATE = {
 
 def check(test, verdict="pass"):
     return schema.TestCheck(test=test, verdict=verdict, reason=f"{test} {verdict}")
-
-
-class FakeLLM:
-    """Stands in for get_llm(): returns the queued ComparisonResults, one per invoke."""
-
-    def __init__(self, *responses):
-        self.responses = list(responses)
-        self.calls = 0
-
-    def with_structured_output(self, _schema):
-        return self
-
-    def invoke(self, _prompt):
-        self.calls += 1
-        response = self.responses.pop(0)
-        # a list of checks is a comparison result; anything else is a raw chat reply
-        return schema.ComparisonResult(checks=response) if isinstance(response, list) else SimpleNamespace(content=response)
-
-
-@pytest.fixture
-def fake_llm(monkeypatch):
-    def install(*responses):
-        llm = FakeLLM(*responses)
-        monkeypatch.setattr(agent, "get_llm", lambda: llm)
-        return llm
-
-    return install
 
 
 def test_issues_are_derived_from_non_pass_checks(fake_llm):
