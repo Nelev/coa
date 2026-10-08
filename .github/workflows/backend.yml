@@ -1,0 +1,56 @@
+name: Backend
+
+on:
+  push:
+    branches: [main]
+    paths: ["backend/**", ".github/workflows/backend.yml"]
+  pull_request:
+    paths: ["backend/**", ".github/workflows/backend.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  ci:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.14"] # the supported floor (README) and the version developed on
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Format
+        run: ruff format --check .
+
+      - name: Lint
+        run: ruff check --output-format=github .
+
+      # The API is not packaged: building it means every module compiles and the app imports with the installed dependencies.
+      - name: Build
+        run: |
+          python -m compileall -q .
+          python -c "import main"
+
+      # The model is mocked, so no API key is needed.
+      - name: Test
+        run: python -m pytest -q
