@@ -237,6 +237,18 @@ The unit tests cover issue derivation, the retry and the fallback to `review`, a
 The eval script is slower (several model calls) and needs `OPENROUTER_API_KEY`. It exits non-zero if any
 verdict differs from the expected one.
 
+## Continuous integration
+
+GitHub Actions run on every pull request and on pushes to `main` (`.github/workflows/`). Each workflow only runs when
+its own folder changes. The same steps run locally:
+
+| | Backend (`backend/`, Python 3.14) | Frontend (`frontend/`, Node 24) |
+|---|---|---|
+| Format | `.venv/bin/ruff format .` | `npm run format` |
+| Lint | `.venv/bin/ruff check .` | `npm run lint` (Biome) |
+| Build | `python -m compileall -q . && python -c "import main"` | `npm run build` (also type-checks) |
+| Test | `.venv/bin/python -m pytest -q` | `npm test` (Vitest) |
+
 ## Known limitations
 
 - `pypdf` only reads text-based PDFs; scanned CoAs would need OCR.

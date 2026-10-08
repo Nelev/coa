@@ -11,6 +11,7 @@ from langgraph.types import StreamWriter
 from pypdf import PdfReader
 
 from schema.schema import CoAData, ComparisonResult, DocumentCheck, Issue, TestCheck
+
 from .prompts import COMPARE_PROMPT, EXTRACTION_PROMPT, RENDER_UI_PROMPT, VALIDATE_PROMPT
 from .state import AgentState
 
@@ -98,8 +99,9 @@ def load_plant_spec(state: AgentState, writer: StreamWriter = _no_writer) -> dic
     product_code = state["supplier_materials"].get("product_code")
     material = _load_plant_specs(PLANT_SPECS_PATH).get(product_code)
     if material is None:
-        issue = Issue(kind="missing_plant_spec", severity="critical",
-                      message=f"No plant specification found for product code {product_code!r}.")
+        issue = Issue(
+            kind="missing_plant_spec", severity="critical", message=f"No plant specification found for product code {product_code!r}."
+        )
         writer(issue.message)
         return {"issues": [issue.model_dump()]}
     writer(material["name"])
@@ -132,17 +134,22 @@ def compare_specs(state: AgentState, writer: StreamWriter = _no_writer) -> dict:
     coa_tests = [{k: t[k] for k in ("test", "result", "unit")} for t in state["tests"]]
     prompt = (
         COMPARE_PROMPT
-        + "Plant requirements:\n" + json.dumps(plant_tests, ensure_ascii=False, separators=(",", ":"))
-        + "\n\nCoA results:\n" + json.dumps(coa_tests, ensure_ascii=False, separators=(",", ":"))
+        + "Plant requirements:\n"
+        + json.dumps(plant_tests, ensure_ascii=False, separators=(",", ":"))
+        + "\n\nCoA results:\n"
+        + json.dumps(coa_tests, ensure_ascii=False, separators=(",", ":"))
     )
 
     llm = get_llm().with_structured_output(ComparisonResult)
     checks = _ask(llm, prompt)
     if set(checks) != expected:  # one retry, telling the model what was wrong
-        checks = _ask(llm, (
-            prompt + f"\n\nYour previous answer did not match the plant tests (missing: {sorted(expected - set(checks))}; "
-            f"unexpected: {sorted(set(checks) - expected)}). Return exactly one check per plant test, names verbatim."
-        ))
+        checks = _ask(
+            llm,
+            (
+                prompt + f"\n\nYour previous answer did not match the plant tests (missing: {sorted(expected - set(checks))}; "
+                f"unexpected: {sorted(set(checks) - expected)}). Return exactly one check per plant test, names verbatim."
+            ),
+        )
 
     supplier_results = {t["test"]: _supplier_result(t) for t in state["tests"]}
     test_checks, issues = [], []
@@ -164,10 +171,7 @@ def render_ui(state: AgentState, writer: StreamWriter = _no_writer) -> dict:
         return {"ui_spec": _alert_spec("This document is not a Certificate of Analysis", rejection["message"])}
     data = {
         "header": state.get("supplier_materials", {}),
-        "tests": [
-            {k: c[k] for k in ("test", "verdict", "supplier_result", "plant_requirement")}
-            for c in state.get("test_checks", [])
-        ],
+        "tests": [{k: c[k] for k in ("test", "verdict", "supplier_result", "plant_requirement")} for c in state.get("test_checks", [])],
         "issues": state.get("issues", []),
     }
     prompt = RENDER_UI_PROMPT + json.dumps(data, ensure_ascii=False, separators=(",", ":"))
@@ -181,7 +185,7 @@ def render_ui(state: AgentState, writer: StreamWriter = _no_writer) -> dict:
         if isinstance(spec, dict) and isinstance(spec.get("elements"), dict) and spec.get("root") in spec["elements"]:
             writer(f"{len(spec['elements'])} elements")
             return {"ui_spec": spec}
-        feedback = "\n\nYour previous reply was not a spec with a \"root\" key that exists in \"elements\". Reply with only the JSON object."
+        feedback = '\n\nYour previous reply was not a spec with a "root" key that exists in "elements". Reply with only the JSON object.'
     return {"ui_spec": FALLBACK_UI_SPEC}
 
 

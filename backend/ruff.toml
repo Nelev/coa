@@ -1,0 +1,9 @@
+line-length = 140
+target-version = "py310"
+
+[lint]
+# pycodestyle, pyflakes, isort, pyupgrade, bugbear
+select = ["E", "F", "I", "UP", "B"]
+
+[lint.per-file-ignores]
+"agent/prompts.py" = ["E501"]  # prompt text is prose, kept on one line per paragraph

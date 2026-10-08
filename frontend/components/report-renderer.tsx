@@ -1,7 +1,7 @@
 "use client";
 
 import { defineCatalog, type Spec } from "@json-render/core";
-import { JSONUIProvider, Renderer, defineRegistry } from "@json-render/react";
+import { defineRegistry, JSONUIProvider, Renderer } from "@json-render/react";
 import { schema } from "@json-render/react/schema";
 import { shadcnComponents } from "@json-render/shadcn";
 import { shadcnComponentDefinitions } from "@json-render/shadcn/catalog";

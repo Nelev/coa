@@ -4,7 +4,7 @@ import { Check, Circle, Loader2, Minus, X } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 
-import { useReport, type Step, type Steps } from "@/components/report-context";
+import { type Step, type Steps, useReport } from "@/components/report-context";
 import { cn } from "@/lib/utils";
 
 // json-render, its shadcn components and zod are only needed once a report arrives; upload() preloads this chunk.
@@ -59,7 +59,7 @@ function StepRow({ label, step, skipped }: { label: string; step?: Step; skipped
         {/* a running step counts up from when its "start" line arrived; a finished one shows the server's measurement */}
         {(step?.status === "running" || step?.ms !== undefined) && (
           <span className="ml-auto tabular-nums text-xs text-muted-foreground">
-            {step.status === "running" ? <Elapsed since={step.startedAt} /> : formatDuration(step.ms!)}
+            {step.status === "running" ? <Elapsed since={step.startedAt} /> : formatDuration(step.ms ?? 0)}
           </span>
         )}
       </div>
@@ -74,7 +74,11 @@ function Progress({ filename, startedAt, steps, active }: { filename: string; st
     <div aria-busy={active} aria-live="polite">
       <p className="mb-3 flex gap-2 text-sm text-muted-foreground">
         <span>{active ? `Analyzing ${filename}…` : filename}</span>
-        {active && <span className="tabular-nums">· <Elapsed since={startedAt} /></span>}
+        {active && (
+          <span className="tabular-nums">
+            · <Elapsed since={startedAt} />
+          </span>
+        )}
       </p>
       <ol className="flex flex-col gap-2 text-sm">
         {STEPS.map(([node, label], i) => (
