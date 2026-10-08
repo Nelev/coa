@@ -13,8 +13,10 @@ class AgentState(TypedDict):
     document_text: str
     supplier_materials: dict[str, str]  # CoA header: product, lot, dates, PO, ...
     spec_values: dict[str, str]  # test name -> specification limit
-    test_results: dict[str, str]  # test name -> reported result (with unit)
+    tests: list[dict]  # structured CoA rows: test, result, unit, specification, method, status
+    plant_spec: dict  # plant requirements for the CoA's product code
+    test_checks: list[dict]  # one verdict per plant-required test, with supplier_result and plant_requirement
     is_running: bool
     is_paused: bool
-    issues: list[str]
+    issues: list[dict]  # non-passing checks and missing-spec problems, see schema.Issue
     report: str

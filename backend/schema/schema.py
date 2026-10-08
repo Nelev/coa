@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, BeforeValidator, Field
 
@@ -46,3 +46,22 @@ class CoAData(BaseModel):
     header: CoAHeader
     tests: list[TestResult] = Field(description="One entry per row of the analytical results table")
     conclusion: Clean | None = Field(None, description="Overall conformity statement of the supplier")
+
+
+class TestCheck(BaseModel):
+    test: str = Field(description="Test name exactly as written in the plant requirements")
+    verdict: Literal["pass", "fail", "review"]
+    reason: str = Field(description="One sentence quoting the CoA result and the plant requirement verbatim")
+
+
+class ComparisonResult(BaseModel):
+    checks: list[TestCheck] = Field(description="Exactly one check per test in the plant requirements")
+
+
+class Issue(BaseModel):
+    kind: Literal["non_conforming", "needs_review", "missing_plant_spec"]
+    severity: Literal["critical", "warning"]
+    message: str
+    test: str | None = None
+    supplier_result: str | None = None
+    plant_requirement: str | None = None

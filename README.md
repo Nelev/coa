@@ -1,0 +1,160 @@
+# CoA agent
+
+An agent that reads a **Certificate of Analysis (CoA)** sent by a supplier to a plant, extracts its data,
+and checks the reported results against the **plant's own specification** for that material.
+
+## Status
+
+| Part | State |
+|---|---|
+| PDF text extraction | done |
+| Structured extraction of the CoA (LLM) | done |
+| Comparison against plant specs (LLM) → `issues` | done |
+| Supplier-approval and shelf-life checks | not started |
+| `report` node (prose summary of the issues) | not started |
+| Pause / resume (`is_running`, `is_paused`) | state fields only, not wired |
+| API endpoint for the agent | not started (`backend/main.py` only has `/health`) |
+| Frontend (Next.js + shadcn dashboard) | scaffold only, not connected to the agent |
+
+The plant limits in `backend/docs/plant_specs.json` are **placeholder values**, not real plant requirements.
+
+## How the agent works
+
+The agent is a [LangGraph](https://langchain-ai.github.io/langgraph/) graph in `backend/agent/agent.py`:
+
+```
+START → load_document → get_document_data → load_plant_spec ─┬→ compare_specs → END
+                                                              └→ END   (no plant spec for this product)
+```
+
+| Node | Uses a model? | What it does |
+|---|---|---|
+| `load_document` | no | Extracts the text of the PDF at `document_path` with `pypdf`. |
+| `get_document_data` | yes | Extracts the CoA into a structured schema: header (certificate, product, lot, dates, PO, quantities), one row per test (specification, method, result, unit, supplier status) and the conclusion. The prompt asks for verbatim values and `null` for anything not stated. |
+| `load_plant_spec` | no | Looks up the CoA's `product_code` in `docs/plant_specs.json`. If there is no entry, it records a `missing_plant_spec` issue and the graph ends without calling the model. |
+| `compare_specs` | yes | Sends the plant requirements and the CoA results (`test`, `result`, `unit` only, so the supplier's own limits and pass/fail can't bias the judgement) to the model with a dedicated prompt. It returns one verdict per plant test: `pass`, `fail` or `review`. |
+
+Rules in the comparison prompt: judge against the plant requirements only; limits are inclusive; a `< x`
+result passes a `max` limit only if x ≤ max and can't be confirmed against a `min` limit; a unit mismatch is
+`review` (never converted); a qualitative result passes only if it is one of the accepted words; a required
+test missing from the CoA is `fail` ("not reported").
+
+### Guardrails around the model call
+
+- **Structured output.** Both model calls use `with_structured_output` with the Pydantic models in
+  `backend/schema/schema.py`.
+- **Whitespace and unit cleanup in the schema.** The `Clean` and `Unit` types collapse the line-wrap whitespace
+  that PDF extraction leaves behind and turn a unit of `-` into `None`.
+- **Coverage check.** The comparison must return exactly one check for each plant test. If it doesn't, the call is
+  retried once with the missing/unexpected names listed. Tests that are still missing become `review`, so a gap is
+  never read as a pass.
+- **Issues are derived in code**, not written by the model: every non-pass verdict becomes an `Issue`
+  (`fail` → `non_conforming`/`critical`, `review` → `needs_review`/`warning`).
+
+### State (`backend/agent/state.py`)
+
+| Field | Content |
+|---|---|
+| `document_path`, `document_text` | input PDF and its extracted text |
+| `supplier_materials` | CoA header fields |
+| `spec_values` | test name → the supplier's printed specification |
+| `tests` | structured CoA rows (test, result, unit, specification, method, status) |
+| `plant_spec` | plant requirements for the CoA's product code |
+| `test_checks` | one verdict per plant test, with the supplier result and plant requirement |
+| `issues` | non-passing checks and missing-spec problems (see `schema.Issue`) |
+| `messages`, `is_running`, `is_paused`, `report` | present but not used yet |
+
+## Repository layout
+
+```
+backend/
+  agent/            LangGraph graph (agent.py) and state (state.py)
+  schema/           Pydantic models: CoA extraction, check verdicts, issues (schema.py)
+  docs/             sample CoAs and the plant specification
+    sample_coa_citric_acid.pdf    conforming CoA (should produce no issues)
+    sample_coa_defective.pdf      CoA with five seeded defects
+    plant_specs.json              plant requirements per product code
+  scripts/eval_compare.py         end-to-end check against the real model
+  tests/                          unit tests (mocked model)
+  main.py                         FastAPI app (health check only)
+frontend/           Next.js + shadcn dashboard scaffold
+```
+
+### Plant specification format
+
+`docs/plant_specs.json` maps product codes to requirements. Test names must match the CoA's names exactly.
+
+- numeric test: `{"test": "Water (Karl Fischer)", "type": "numeric", "max": 0.4, "unit": "%"}` (`min` and/or `max`)
+- qualitative test: `{"test": "Appearance", "type": "qualitative", "accepted": ["conforms", "complies"], "requirement": "..."}`
+
+`approved_suppliers` and `min_remaining_shelf_life_days` are in the file but nothing reads them yet.
+
+## Running it
+
+Backend (Python 3.10+, developed on 3.14, with a virtualenv in `backend/.venv`):
+
+```bash
+cd backend
+uv venv .venv   # first time only
+uv pip install --python .venv/bin/python -r requirements-dev.txt
+```
+
+The model is reached through [OpenRouter](https://openrouter.ai/) (`openai/gpt-5-mini`). Put your key in
+`backend/.env` (gitignored; loaded automatically with `python-dotenv`):
+
+```
+OPENROUTER_API_KEY=your-openrouter-api-key-here
+```
+
+Run the agent on the sample CoA, or on another PDF:
+
+```bash
+cd backend
+.venv/bin/python -m agent.agent                              # docs/sample_coa_citric_acid.pdf
+.venv/bin/python -m agent.agent docs/sample_coa_defective.pdf
+.venv/bin/python -m agent.agent path/to/other.pdf
+```
+
+It prints the extracted header, each test with its result and the supplier's specification, the verdict for
+every plant test, and the list of issues. On the defective sample the issues are:
+
+| Test | Seeded defect | Expected |
+|---|---|---|
+| Water (Karl Fischer) | 0.45 %: passes the supplier's 0.5 limit, not the plant's 0.4 | critical |
+| Assay (anhydrous basis) | 99.2 %: below min 99.5 | critical |
+| Arsenic (As) | row removed from the CoA | critical |
+| Lead (Pb) | `< 0.5`: can't be confirmed against max 0.3 | warning |
+| Appearance | "Slightly yellow powder": not an accepted result | warning |
+
+Backend API (currently just `/health`):
+
+```bash
+cd backend && .venv/bin/uvicorn main:app --reload
+```
+
+Frontend:
+
+```bash
+cd frontend && npm install && npm run dev
+```
+
+## Testing
+
+```bash
+cd backend
+.venv/bin/python -m pytest -q           # unit tests, mocked model, no API key needed
+.venv/bin/python -m scripts.eval_compare   # calls the real model on both sample CoAs, diffs the verdicts
+```
+
+The unit tests cover issue derivation, the retry and the fallback to `review`, and the missing-spec routing.
+The eval script is slower (several model calls) and needs `OPENROUTER_API_KEY`. It exits non-zero if any
+verdict differs from the expected one.
+
+## Known limitations
+
+- `pypdf` only reads text-based PDFs; scanned CoAs would need OCR.
+- The model's output casing varies between runs (for example the supplier name is sometimes printed in capitals);
+  values are copied from the document, not normalised.
+- Numeric comparison is done by the model. The retry and the eval script exist to guard it; doing the numeric
+  tests in Python and sending only qualitative rows to the model is a possible next step.
+- Test names on the CoA must match the plant specification exactly; there is no fuzzy matching yet.
