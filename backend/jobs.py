@@ -15,11 +15,15 @@ CREATE TABLE IF NOT EXISTS jobs (
     statuses TEXT NOT NULL DEFAULT '[]',
     ui_spec TEXT,
     error TEXT,
-    started_at INTEGER
+    started_at INTEGER,
+    result TEXT,
+    finished_at INTEGER
 )
 """
+# columns added after the first version: an existing database gets them when it is opened
+ADDED_COLUMNS = {"result": "TEXT", "finished_at": "INTEGER"}
 # what a listing returns: everything but the (large) spec
-SUMMARY = "id, filename, status, statuses, error, started_at"
+SUMMARY = "id, filename, status, statuses, error, started_at, finished_at, result"
 
 
 def _now() -> int:
@@ -29,6 +33,8 @@ def _now() -> int:
 def _job(row: sqlite3.Row) -> dict:
     job = dict(row)
     job["statuses"] = json.loads(job["statuses"])
+    if job["result"] is not None:
+        job["result"] = json.loads(job["result"])
     if job.get("ui_spec") is not None:
         job["ui_spec"] = json.loads(job["ui_spec"])
     return job
@@ -46,6 +52,10 @@ class Jobs:
         self.db_path = directory / "jobs.db"
         self._execute("PRAGMA journal_mode=WAL")  # readers don't block the workers' writes
         self._execute(SCHEMA)
+        existing = {row["name"] for row in self._execute("PRAGMA table_info(jobs)")}
+        for column, kind in ADDED_COLUMNS.items():
+            if column not in existing:
+                self._execute(f"ALTER TABLE jobs ADD COLUMN {column} {kind}")
 
     def _execute(self, sql: str, args: tuple = ()) -> list[sqlite3.Row]:
         # one short-lived connection per call, so no connection is shared between threads
@@ -79,11 +89,12 @@ class Jobs:
     def add_status(self, job_id: str, text: str) -> None:
         self._execute("UPDATE jobs SET statuses = json_insert(statuses, '$[#]', ?) WHERE id = ?", (text, job_id))
 
-    def finish(self, job_id: str, ui_spec: dict) -> None:
-        self._execute("UPDATE jobs SET status = 'done', ui_spec = ? WHERE id = ?", (json.dumps(ui_spec), job_id))
+    def finish(self, job_id: str, ui_spec: dict, result: dict | None) -> None:
+        sql = "UPDATE jobs SET status = 'done', ui_spec = ?, result = ?, finished_at = ? WHERE id = ?"
+        self._execute(sql, (json.dumps(ui_spec), None if result is None else json.dumps(result), _now(), job_id))
 
     def fail(self, job_id: str, message: str) -> None:
-        self._execute("UPDATE jobs SET status = 'error', error = ? WHERE id = ?", (message, job_id))
+        self._execute("UPDATE jobs SET status = 'error', error = ?, finished_at = ? WHERE id = ?", (message, _now(), job_id))
 
     def requeue_unfinished(self) -> list[str]:
         """After a restart: the jobs that were running go back to queued. Returns the ids of all queued jobs, oldest first."""

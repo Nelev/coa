@@ -18,6 +18,7 @@ class AgentState(TypedDict):
     plant_spec: dict  # plant requirements for the CoA's product code
     test_checks: list[dict]  # one verdict per plant-required test, with supplier_result and plant_requirement
     ui_spec: dict  # json-render spec of the report page, rendered by the frontend
+    result: dict  # what the job list shows: outcome, verdict counts, product, lot and supplier
     is_running: bool
     is_paused: bool
     issues: list[dict]  # non-passing checks and missing-spec problems, see schema.Issue

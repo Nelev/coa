@@ -35,10 +35,10 @@ def run_job(job_id: str) -> None:
         inputs = None if resume else {"document_path": str(store.pdf_path(job_id))}
         for update in agent_app.stream(inputs, config, stream_mode="custom"):  # what the nodes report with their stream writer
             store.add_status(job_id, update["status"])
-        spec = agent_app.get_state(config).values.get("ui_spec")  # the last node's output, saved in the checkpoint
-        if spec is None:
+        values = agent_app.get_state(config).values  # the last nodes' output, saved in the checkpoint
+        if values.get("ui_spec") is None:
             raise RuntimeError("the agent finished without a report")
-        store.finish(job_id, spec)
+        store.finish(job_id, values["ui_spec"], values.get("result"))
     except Exception as error:
         store.fail(job_id, str(error) or type(error).__name__)
     finally:
@@ -76,8 +76,9 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-# local development: the Next.js dev server calls this API straight from the browser
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000"], allow_methods=["GET", "POST"])
+# local development: the Next.js dev server calls this API straight from the browser (CORS_ORIGINS: comma-separated, to allow another)
+origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST"])
 
 
 @app.get("/health")
@@ -89,8 +90,9 @@ async def health():
 def create_job(file: UploadFile):
     """Queue the agent to analyze an uploaded CoA PDF. Poll GET /jobs/{id} for its progress and result."""
     job_id = store.create(file.filename or "document.pdf", file.file)
+    job = store.get(job_id)  # before a worker can take it, so the answer is still "queued"
     pending.put(job_id)
-    return store.get(job_id)
+    return job
 
 
 @app.get("/jobs")

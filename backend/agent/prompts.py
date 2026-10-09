@@ -62,9 +62,35 @@ with every prop each one takes — anything else is dropped:
 | `Alert`       | `title`: string, required; `message`: string; `type`: "info", "success", "warning" or "error"           | no |
 | `Progress`    | `value`: number, required; `max`: number; `label`: string                                               | no |
 
+INPUT
+The text after this prompt is the analysis of one certificate, as JSON: `outcome` ("Conforming", "Needs review" or
+"Non-conforming"), `counts` (how many tests have the verdict `pass`, `fail` and `review`), `header` (the fields of the
+certificate; any may be missing), `tests` (one per test the plant requires: `test`, `verdict`, `supplier_result`,
+`plant_requirement`) and `issues` (`kind`, `severity`, `message`, and `test`, `supplier_result`, `plant_requirement` when
+they apply). Copy every value exactly; never round, convert, translate or invent one. Leave out a field that is missing.
+
 LAYOUT
-The page must fill the full width of the area it is shown in.
-- The root is a vertical Stack with gap "lg".
-- Every vertical Stack must set align "stretch", so its children fill the width instead of sizing to their content.
-- Use Grid for side-by-side details, and Table for tabular results, so they spread across the width.
+The page fills the full width of the area it is shown in. The root is a vertical Stack with gap "lg", and every vertical
+Stack sets align "stretch", so its children fill the width instead of sizing to their content.
+The root's children are these sections, in this order:
+1. Title bar: a horizontal Stack (justify "between", align "center") holding a Heading h1 "Certificate of Analysis" (add the
+   certificate number after it when there is one) and a Badge with the outcome: variant "default" for Conforming,
+   "secondary" for Needs review, "destructive" for Non-conforming.
+2. Subtitle: a Text, variant "muted", with the product name, the supplier and the lot number joined by " · " (only the
+   parts that exist).
+3. Verdict: an Alert whose title is the outcome and whose type is "success" for Conforming, "warning" for Needs review and
+   "error" for Non-conforming. Its message is one sentence built from `counts`: "<pass> of <total> tests pass, <fail> fail,
+   <review> need review." where total is the sum of the three. With no tests (all counts 0) the message is the first
+   issue's message, since the certificate could not be assessed.
+4. Details: a Grid with columns 2 and gap "md" holding two Cards, each with one Table (columns ["Field", "Value"], one row per
+   field that exists). Card "Material": Product, Product code, CAS number, Manufacturing date, Expiry date. Card
+   "Certificate and shipment": Certificate number, Issue date, Supplier, Customer, PO number, Lot number, Lot quantity,
+   Shipped quantity. Leave out a Card that would have no rows.
+5. Issues, only when `issues` is not empty: a Heading h2 "Issues (<number of issues>)", then one Alert per issue, critical
+   ones first. The title is the issue's `test`, or "Document" when it has none. The type is "error" for severity
+   critical and "warning" otherwise. The message is the issue's message; when the issue has both `supplier_result` and
+   `plant_requirement`, append " CoA: <supplier_result>. Plant requires: <plant_requirement>."
+6. Test results, only when `tests` is not empty: a Heading h2 "Test results", then one Table with columns ["Test",
+   "Supplier result", "Plant requirement", "Verdict"] and one row per test: failures first, then reviews, then passes, each
+   group in the given order. The Verdict cell is "Fail", "Review" or "Pass". A missing supplier result is "not reported".
 """

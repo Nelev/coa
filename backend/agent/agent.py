@@ -172,24 +172,44 @@ def _outcome(issues: list[dict]) -> str:
     return "Needs review" if issues else "Conforming"
 
 
+NOT_A_COA = "Not a CoA"
+
+
+def _result(outcome: str, checks: list[dict], header: dict) -> dict:
+    """The few facts the job list shows without opening the report."""
+    counts = {verdict: sum(c["verdict"] == verdict for c in checks) for verdict in ("pass", "fail", "review")}
+    return {
+        "outcome": outcome,
+        "counts": counts,
+        "product": header.get("product_name"),
+        "lot": header.get("lot_number"),
+        "supplier": header.get("supplier"),
+    }
+
+
 def write_summary(state: AgentState) -> dict:
     """Write the agent's final message: the outcome, certificate header, test results and issues, as compact JSON."""
     _status("Summarizing the findings")
     issues = state.get("issues", [])
+    checks = state.get("test_checks", [])
+    header = state.get("supplier_materials", {})
+    result = _result(_outcome(issues), checks, header)
     summary = {
-        "outcome": _outcome(issues),
-        "header": state.get("supplier_materials", {}),
-        "tests": [{k: c[k] for k in ("test", "verdict", "supplier_result", "plant_requirement")} for c in state.get("test_checks", [])],
+        "outcome": result["outcome"],
+        "counts": result["counts"],
+        "header": header,
+        "tests": [{k: c[k] for k in ("test", "verdict", "supplier_result", "plant_requirement")} for c in checks],
         "issues": issues,
     }
-    return {"messages": [AIMessage(json.dumps(summary, ensure_ascii=False, separators=(",", ":")))]}
+    return {"messages": [AIMessage(json.dumps(summary, ensure_ascii=False, separators=(",", ":")))], "result": result}
 
 
 def render_ui(state: AgentState) -> dict:
     """Ask the model to build a json-render UI spec from the agent's last message (no model call for a document that is not a CoA)."""
     _status("Building the report")
     if rejection := _not_a_coa(state):
-        return {"ui_spec": _alert_spec("This document is not a Certificate of Analysis", rejection["message"])}
+        spec = _alert_spec("This document is not a Certificate of Analysis", rejection["message"])
+        return {"ui_spec": spec, "result": _result(NOT_A_COA, [], {})}
     prompt = f"{RENDER_UI_PROMPT}\n{state['messages'][-1].content}"
     feedback = ""
     for _ in range(2):  # one retry, telling the model what was wrong
