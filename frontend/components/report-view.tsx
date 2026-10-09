@@ -77,7 +77,7 @@ export function ReportView() {
       return (
         <div className="flex flex-col gap-6">
           <Progress run={run} />
-          <ReportRenderer spec={run.spec} />
+          {run.spec !== undefined && <ReportRenderer spec={run.spec} />}
         </div>
       );
   }

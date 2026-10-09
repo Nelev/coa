@@ -15,8 +15,8 @@ and checks the reported results against the **plant's own specification** for th
 | Supplier-approval and shelf-life checks | not started |
 | `report` node (prose summary of the issues) | not started |
 | Pause / resume (`is_running`, `is_paused`) | state fields only, not wired |
-| API endpoint: `POST /analyze` runs the agent on an uploaded PDF and returns the UI spec | done (CORS allows `http://localhost:3000` only) |
-| Frontend (Next.js + shadcn dashboard) | sidebar button uploads one or more PDFs to `POST /analyze` (up to 3 at a time, the rest wait) and the sidebar lists the runs; pick one to see its report |
+| API: `POST /jobs` queues the agent on an uploaded PDF; `GET /jobs` and `GET /jobs/{id}` return the progress and the UI spec | done (jobs are kept in SQLite and survive restarts; CORS allows `http://localhost:3000` only) |
+| Frontend (Next.js + shadcn dashboard) | sidebar button uploads one or more PDFs to `POST /jobs` and polls the jobs; the sidebar lists the runs (they come back after a reload); pick one to see its report |
 
 The plant limits in `backend/docs/plant_specs.json` are **placeholder values**, not real plant requirements.
 
@@ -99,8 +99,8 @@ How the pieces fit:
 |---|---|---|
 | 1. Prompt | `RENDER_UI_PROMPT` in `backend/agent/prompts.py` | Lists the available components and their props (Stack, Grid, Card, Separator, Heading, Text, Badge, Alert, Table) and says how to build the page: outcome badge and recommendation, certificate card, findings as Alerts (critical first), the results table, and a "not assessed" note. The model gets only the header, the per-test verdicts and the issues, and must copy values exactly. |
 | 2. Node | `render_ui` in `backend/agent/agent.py` | Sends the prompt, parses the JSON reply (fenced or not) and stores it as `ui_spec`. Invalid replies are retried once with the error, then replaced by an error Alert. |
-| 3. API | `POST /analyze` in `backend/main.py` | Runs the whole graph on an uploaded PDF, streams what each node is doing, then the `ui_spec`. |
-| 4. Upload | `frontend/components/upload-button.tsx`, `report-context.tsx` | The **Upload documents** button in the sidebar posts each PDF to the API, at most 3 at a time (one connection each; browsers cap them at about 6 per origin), and keeps one run per file (queued, loading, error, done). |
+| 3. API | `POST /jobs` in `backend/main.py` | Queues the whole graph for an uploaded PDF; a worker runs it, records what each node is doing, then the `ui_spec`. |
+| 4. Upload | `frontend/components/upload-button.tsx`, `report-context.tsx` | The **Upload documents** button in the sidebar posts each PDF to the API, which queues them, and polls the jobs once a second while any is unfinished. There is one run per file (queued, loading, error, done). |
 | 5. Render | `frontend/components/report-renderer.tsx` | Validates the spec against the catalog (the same nine components, taken from `@json-render/shadcn`) and renders it inside the page's `<main>`. An invalid spec shows an error message instead of rendering. |
 
 The renderer (json-render, the shadcn components and zod) is loaded on demand with `next/dynamic` and preloaded when an
@@ -133,10 +133,11 @@ backend/
     plant_specs.json              plant requirements per product code
   scripts/eval_compare.py         end-to-end check against the real model
   tests/                          unit tests (mocked model)
-  main.py                         FastAPI app: /health and POST /analyze
+  main.py                         FastAPI app: /health, POST /jobs, GET /jobs and GET /jobs/{id}, plus the job queue and its workers
+  jobs.py                         the jobs table (SQLite) and the uploaded PDFs of unfinished jobs; data lives in backend/data/ (gitignored)
 frontend/           Next.js + shadcn dashboard; app/page.tsx shows the report inside <main>
   components/upload-button.tsx     sidebar button: picks one or more PDFs and sends them to the API
-  components/report-context.tsx    the list of runs (queued / loading / error / done), the statuses from each stream, and the POST /analyze calls with a limit of 3 at once
+  components/report-context.tsx    the list of runs (queued / loading / error / done), the jobs polled from the API, and the POST /jobs calls
   components/runs-list.tsx         sidebar list of runs; click one to select it
   components/report-view.tsx       what <main> shows for the selected run, including the list of statuses and the elapsed time
   components/report-renderer.tsx   json-render catalog + registry (shadcn components)
@@ -188,29 +189,44 @@ every plant test, and the list of issues. On the defective sample the issues are
 | Lead (Pb) | `< 0.5`: can't be confirmed against max 0.3 | warning |
 | Appearance | "Slightly yellow powder": not an accepted result | warning |
 
-Backend API (`GET /health`, `POST /analyze`):
+Backend API (`GET /health`, `POST /jobs`, `GET /jobs`, `GET /jobs/{id}`):
 
 ```bash
 cd backend && .venv/bin/uvicorn main:app --reload
 ```
 
-`POST /analyze` takes a PDF as multipart form data (field `file`) and runs the agent on it. A run takes a minute or
-more, because the agent makes several model calls, so the response is a stream of JSON lines (NDJSON) built from
-LangGraph's `updates` and `custom` stream modes (`stream_mode=["updates", "custom"], version="v2"`):
+`POST /jobs` takes a PDF as multipart form data (field `file`), stores it and answers `202` with the new job. A run
+takes a minute or more, because the agent makes several model calls, so the work happens in the background: the
+client polls `GET /jobs` (every job, oldest first, without the report) or `GET /jobs/{id}` (one job, with the report).
+A job looks like this:
 
-| Line | Meaning |
+| Field | Meaning |
 |---|---|
-| `{"status": "Reading the PDF"}` | the running node says what it is doing. Each node calls `_status(...)` first thing, which writes `{"status": ...}` with LangGraph's `get_stream_writer()`; it arrives in the `custom` stream mode |
-| `{"done": <json-render UI spec>}` | the report; the last line of a successful run. It is taken from the `updates` stream mode, where `render_ui` returns `ui_spec`; the other node updates are not sent, because they include the whole PDF text |
-| `{"error": "..."}` | the run failed |
+| `id` | the job id, which is also the agent's LangGraph `thread_id` |
+| `status` | `queued` (waiting for a worker), `running`, `done` or `error` |
+| `statuses` | what the nodes reported, in order. Each node calls `_status(...)` first thing, which writes `{"status": ...}` with LangGraph's `get_stream_writer()`; the worker streams the graph in the `custom` stream mode and appends each one |
+| `ui_spec` | the report, in `GET /jobs/{id}` only, once the job is `done`. The worker reads it from the run's checkpoint once the graph has finished, so only the report is copied into the job |
+| `error` | why the job failed, when `status` is `error` |
+| `started_at` | when a worker took the job, in milliseconds since the epoch |
 
-The frontend shows the `status` lines in arrival order and knows nothing about the graph. Nodes the graph routes around
+How the queue works:
+
+- `MAX_CONCURRENT_RUNS` (default 2) worker threads take job ids from an in-memory queue. The jobs themselves are rows in
+  `backend/data/jobs.db`, and the PDF of an unfinished job is kept in `backend/data/uploads/` (set `JOBS_DIR` to move both).
+- The agent is compiled with a SQLite checkpointer (`backend/data/checkpoints.db`) and run with the job id as its
+  `thread_id`, so its state is saved after every node.
+- When the API starts, jobs that were running (the process died) go back to the queue. A job whose run had passed some
+  nodes continues after the last finished one; one that had not starts over. Jobs are kept until you delete `backend/data/`.
+- The queue is per process: run one uvicorn worker.
+
+The frontend shows the `statuses` in order and knows nothing about the graph. Nodes the graph routes around
 (for example everything between `validate_document` and `render_ui` for a document that is not a CoA) send no status,
 so they do not appear. `get_stream_writer()` only works inside a graph run, so the unit tests make it a no-op
 (`tests/conftest.py`).
 
 ```bash
-curl -N -F "file=@docs/sample_coa_defective.pdf" localhost:8000/analyze
+curl -F "file=@docs/sample_coa_defective.pdf" localhost:8000/jobs   # prints the job, including its id
+curl localhost:8000/jobs/<id>
 ```
 
 Frontend:
