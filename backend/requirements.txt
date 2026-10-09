@@ -1,6 +1,7 @@
 fastapi[standard]
 uvicorn[standard]
 langgraph
+langgraph-checkpoint-sqlite
 langchain-openai
 pypdf
 python-dotenv
