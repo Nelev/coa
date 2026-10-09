@@ -28,8 +28,10 @@ export function ReportRenderer({ spec }: { spec: unknown }) {
     );
   }
   return (
-    <JSONUIProvider registry={registry}>
-      <Renderer spec={spec as Spec} registry={registry} />
-    </JSONUIProvider>
+    <div className="report">
+      <JSONUIProvider registry={registry}>
+        <Renderer spec={spec as Spec} registry={registry} />
+      </JSONUIProvider>
+    </div>
   );
 }
