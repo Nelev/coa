@@ -1,25 +1,13 @@
 "use client";
 
-import { Check, Circle, Loader2, Minus, X } from "lucide-react";
+import { Check, Loader2, X } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 
-import { type Step, type Steps, useReport } from "@/components/report-context";
-import { cn } from "@/lib/utils";
+import { useReport } from "@/components/report-context";
 
 // json-render, its shadcn components and zod are only needed once a report arrives; upload() preloads this chunk.
 const ReportRenderer = dynamic(() => import("@/components/report-renderer").then((m) => m.ReportRenderer));
-
-// agent graph node -> label, in run order
-// (compare_specs is skipped when the product has no plant spec; a document that is not a CoA skips to render_ui)
-const STEPS = [
-  ["load_document", "Reading the PDF"],
-  ["validate_document", "Checking it is a CoA"],
-  ["get_document_data", "Extracting the CoA data"],
-  ["load_plant_spec", "Finding the plant specification"],
-  ["compare_specs", "Comparing results with the specification"],
-  ["render_ui", "Building the report"],
-] as const;
 
 // 1.8s, 42.0s, 1m 05s; below a second the exact milliseconds
 function formatDuration(ms: number) {
@@ -43,47 +31,31 @@ const ICONS = {
   done: <Check className="size-4" />,
   running: <Loader2 className="size-4 animate-spin" />,
   failed: <X className="size-4 text-destructive" />,
-  skipped: <Minus className="size-4" />,
-  pending: <Circle className="size-4" />,
 };
 
-function StepRow({ label, step, skipped }: { label: string; step?: Step; skipped: boolean }) {
-  const status = step?.status ?? (skipped ? "skipped" : "pending");
-  return (
-    <li className={cn("flex flex-col gap-0.5", (status === "pending" || status === "skipped") && "text-muted-foreground")}>
-      <div className="flex items-center gap-2">
-        {ICONS[status]}
-        <span>{label}</span>
-        {status === "skipped" && <span className="text-xs">skipped</span>}
-        {status === "failed" && <span className="text-xs text-destructive">failed</span>}
-        {/* a running step counts up from when its "start" line arrived; a finished one shows the server's measurement */}
-        {(step?.status === "running" || step?.ms !== undefined) && (
-          <span className="ml-auto tabular-nums text-xs text-muted-foreground">
-            {step.status === "running" ? <Elapsed since={step.startedAt} /> : formatDuration(step.ms ?? 0)}
-          </span>
-        )}
-      </div>
-      {step?.output && <p className="pl-6 text-xs text-muted-foreground">{step.output}</p>}
-    </li>
-  );
-}
+type Outcome = "running" | "done" | "failed";
 
-// `active` is false once the run has stopped, so the total stops counting
-function Progress({ filename, startedAt, steps, active }: { filename: string; startedAt: number; steps: Steps; active: boolean }) {
+// `outcome` is how the run ended, or "running" while it goes on; it applies to the last status, every earlier one is done
+function Progress({ filename, startedAt, statuses, outcome }: { filename: string; startedAt: number; statuses: string[]; outcome: Outcome }) {
+  const running = outcome === "running";
   return (
-    <div aria-busy={active} aria-live="polite">
+    <div aria-busy={running} aria-live="polite">
       <p className="mb-3 flex gap-2 text-sm text-muted-foreground">
-        <span>{active ? `Analyzing ${filename}…` : filename}</span>
-        {active && (
+        <span>{running ? `Analyzing ${filename}…` : filename}</span>
+        {running && (
           <span className="tabular-nums">
             · <Elapsed since={startedAt} />
           </span>
         )}
       </p>
       <ol className="flex flex-col gap-2 text-sm">
-        {STEPS.map(([node, label], i) => (
-          // a step that never started while a later one did was routed around
-          <StepRow key={node} label={label} step={steps[node]} skipped={STEPS.slice(i + 1).some(([later]) => later in steps)} />
+        {statuses.map((status, i) => (
+          // the status texts can repeat, so the position is the key
+          // biome-ignore lint/suspicious/noArrayIndexKey: the list only grows at the end
+          <li key={i} className="flex items-center gap-2">
+            {ICONS[i === statuses.length - 1 ? outcome : "done"]}
+            {status}
+          </li>
         ))}
       </ol>
     </div>
@@ -97,20 +69,20 @@ export function ReportView() {
     case "idle":
       return <p className="text-sm text-muted-foreground">Upload a CoA PDF from the sidebar to generate a report.</p>;
     case "loading":
-      return <Progress filename={report.filename} startedAt={report.startedAt} steps={report.steps} active />;
+      return <Progress filename={report.filename} startedAt={report.startedAt} statuses={report.statuses} outcome="running" />;
     case "error":
       return (
         <div className="flex flex-col gap-4">
           <p role="alert" className="text-sm text-destructive">
             The document could not be analyzed: {report.message}. Is the backend running?
           </p>
-          {report.run && Object.keys(report.run.steps).length > 0 && <Progress {...report.run} active={false} />}
+          {report.run && report.run.statuses.length > 0 && <Progress {...report.run} outcome="failed" />}
         </div>
       );
     case "done":
       return (
         <div className="flex flex-col gap-6">
-          <Progress filename={report.filename} startedAt={report.startedAt} steps={report.steps} active={false} />
+          <Progress filename={report.filename} startedAt={report.startedAt} statuses={report.statuses} outcome="done" />
           <ReportRenderer spec={report.spec} />
         </div>
       );

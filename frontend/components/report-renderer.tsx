@@ -8,7 +8,7 @@ import { shadcnComponentDefinitions } from "@json-render/shadcn/catalog";
 import { useMemo } from "react";
 
 // The components the report agent may use; keep in sync with RENDER_UI_PROMPT (backend/agent/prompts.py).
-const NAMES = ["Stack", "Grid", "Card", "Separator", "Heading", "Text", "Badge", "Alert", "Table"] as const;
+const NAMES = ["Stack", "Grid", "Card", "Separator", "Collapsible", "Accordion", "Heading", "Text", "Badge", "Alert", "Progress", "Table"] as const;
 
 function pick<T extends Record<string, unknown>>(all: T): Pick<T, (typeof NAMES)[number]> {
   return Object.fromEntries(NAMES.map((name) => [name, all[name]])) as Pick<T, (typeof NAMES)[number]>;

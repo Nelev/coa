@@ -1,7 +1,6 @@
 import json
 import shutil
 import tempfile
-from time import perf_counter
 
 from fastapi import FastAPI, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,9 +22,8 @@ async def health():
 def analyze(file: UploadFile):
     """Run the agent on an uploaded CoA PDF, streaming one JSON line per event.
 
-    Lines: {"start": <node>} when a step begins, {"output": <one line>, "node": <node>} when the step reports what it
-    produced, {"step": <node>, "ms": <duration>} when it finishes, then {"done": <json-render UI spec>} or
-    {"error": <message>}.
+    Lines: {"status": <what the running node is doing>}, as each node reports it with its stream writer, then
+    {"done": <json-render UI spec>} or {"error": <message>}.
     """
     pdf = tempfile.NamedTemporaryFile(suffix=".pdf")
     shutil.copyfileobj(file.file, pdf)
@@ -33,22 +31,14 @@ def analyze(file: UploadFile):
 
     # a plain generator: Starlette iterates it in a worker thread, so the minutes-long agent run doesn't block the server
     def events():
-        # the graph runs one step at a time, so the last started step is the one that is running and is being timed
-        running, started = None, 0.0
         try:
-            for mode, data in agent_app.stream({"document_path": pdf.name}, stream_mode=["tasks", "custom"]):
-                if mode == "custom":  # a node reported its output with its stream writer
-                    yield json.dumps({"output": data, "node": running}) + "\n"
-                elif "input" in data:  # a task is about to run
-                    running, started = data["name"], perf_counter()
-                    yield json.dumps({"start": running}) + "\n"
-                elif data["error"]:
-                    yield json.dumps({"error": data["error"]}) + "\n"
-                    return
-                else:  # a task finished
-                    yield json.dumps({"step": data["name"], "ms": round((perf_counter() - started) * 1000)}) + "\n"
-                    if "ui_spec" in (data["result"] or {}):
-                        yield json.dumps({"done": data["result"]["ui_spec"]}) + "\n"
+            for chunk in agent_app.stream({"document_path": pdf.name}, stream_mode=["updates", "custom"], version="v2"):
+                if chunk["type"] == "custom":  # a node reported its status
+                    yield json.dumps(chunk["data"]) + "\n"
+                else:  # a node finished; the node's update holds its state changes, and the last node's holds the spec
+                    for update in chunk["data"].values():
+                        if "ui_spec" in (update or {}):
+                            yield json.dumps({"done": update["ui_spec"]}) + "\n"
         except Exception as error:
             yield json.dumps({"error": str(error) or type(error).__name__}) + "\n"
         finally:

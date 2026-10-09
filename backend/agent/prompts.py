@@ -38,50 +38,33 @@ COMPARE_PROMPT = (
     "review = cannot be decided automatically.\n\n"
 )
 
-RENDER_UI_PROMPT = """You build the report page for an incoming-quality-control review of a supplier Certificate of Analysis (CoA).
+RENDER_UI_PROMPT = """You build the required UI from the JSON spec below.
 Reply with ONE JSON object, the UI spec, and nothing else: no prose, no markdown, no code fences.
 
-SPEC FORMAT
-{"root": "<element key>", "elements": {"<element key>": {"type": "<component>", "props": {...}, "children": ["<element key>", ...]}}}
-- Every element needs "type", "props" and "children". Leaf elements use "children": [].
-- Every key listed in a "children" array must be defined in "elements". Keys are unique.
-- Use only the components below, and only the props listed for them. Optional props can be left out.
-- Write every value as a plain string; do not use expressions or placeholders.
+The spec is a flat tree: `root` names one element in `elements`, and each
+element is `{"type", "props", "children"}`, where `children` lists element ids
+and is `[]` for a component that takes none. Only the props marked required
+must be sent; leave out any other you do not need. These are the only types,
+with every prop each one takes — anything else is dropped:
 
-AVAILABLE COMPONENTS
-- Stack: {direction?: "horizontal"|"vertical", gap?: "none"|"sm"|"md"|"lg"|"xl", align?: "start"|"center"|"end"|"stretch", justify?: "start"|"center"|"end"|"between"|"around"}. Flex container, has children.
-- Grid: {columns?: number, gap?: "sm"|"md"|"lg"|"xl"}. Grid layout, has children.
-- Card: {title?: string, description?: string}. Bordered section, has children.
-- Separator: {orientation?: "horizontal"|"vertical"}. Divider line.
-- Heading: {text: string, level?: "h1"|"h2"|"h3"|"h4"}.
-- Text: {text: string, variant?: "body"|"caption"|"muted"|"lead"|"code"}.
-- Badge: {text: string, variant?: "default"|"secondary"|"destructive"|"outline"}. Short status label.
-- Alert: {title: string, message?: string, type?: "info"|"success"|"warning"|"error"}. Banner.
-- Table: {columns: string[], rows: string[][], caption?: string}. Every row has one string per column.
+| Type          | Props                                                                                                   | Children |
+|---------------|---------------------------------------------------------------------------------------------------------|----------|
+| `Card`        | `title`, `description`: string                                                           | yes |
+| `Stack`       | `direction`: "horizontal" or "vertical"; `gap`: "none", "sm", "md", "lg" or "xl"; `align`: "start", "center", "end" or "stretch"; `justify`: "start", "center", "end", "between" or "around" | yes |
+| `Grid`        | `columns`: number, 1 to 6; `gap`: "sm", "md", "lg" or "xl"                                              | yes |
+| `Separator`   | `orientation`: "horizontal" or "vertical"                                                               | no |
+| `Collapsible` | `title`: string, required; `defaultOpen`: boolean                                                       | yes |
+| `Accordion`   | `items`: objects of `title` and `content` strings, required; `type`: "single" or "multiple"             | no |
+| `Table`       | `columns`: strings, required; `rows`: string arrays, one per row, required; `caption`: string           | no |
+| `Heading`     | `text`: string, required; `level`: "h1", "h2", "h3" or "h4"                                             | no |
+| `Text`        | `text`: string, required; `variant`: "body", "caption", "muted", "lead" or "code"                       | no |
+| `Badge`       | `text`: string, required; `variant`: "default", "secondary", "destructive" or "outline"                 | no |
+| `Alert`       | `title`: string, required; `message`: string; `type`: "info", "success", "warning" or "error"           | no |
+| `Progress`    | `value`: number, required; `max`: number; `label`: string                                               | no |
 
-HOW TO BUILD THE PAGE
-The root is a vertical Stack (gap "lg"). Every vertical Stack must set align "stretch", so that its children fill the
-width of the page instead of sizing to their content. In this order:
-1. Title: a Heading with the product name and lot number, and a Badge for the outcome. The outcome is
-   "Non-conforming" (destructive) if any issue has severity "critical", else "Needs review" (secondary) if there are
-   any issues, else "Conforming" (default).
-2. A Text (variant "lead") with the recommendation: for non-conforming, do not release the lot and quarantine it until
-   QA decides; for needs review, hold the lot until QA has reviewed the flagged results; for conforming, the results
-   meet the plant specification. Say that the release decision stays with QA.
-3. A Card "Certificate" with the header details (certificate number, issue date, supplier, product code,
-   manufacturing and expiry dates, PO number, lot and shipped quantity, customer), laid out in a Grid of Text elements.
-   Skip any detail that is missing.
-4. If there are issues: a Heading "Findings", then one Alert per issue, critical issues first (type "error"), then
-   warnings (type "warning"). The Alert title is the test name; the message says what was reported and what the plant
-   requires, and why it is flagged. If an issue has no test, use its message as the Alert title.
-5. A Heading "Results against the plant specification" and a Table with the columns Test, Verdict, Reported, Plant
-   requirement, in that order: one row per entry in "tests", with the verdict in capitals (PASS, FAIL, REVIEW) and
-   "not reported" when there is no reported result.
-6. A Text (variant "muted") saying that supplier approval and remaining shelf life were not assessed.
-
-RULES
-- Use only values from the data below. Copy numbers, units, limits and names exactly; never invent, round or convert.
-- If there are no tests (for example because no plant specification was found), skip the table and show the issues.
-
-DATA
+LAYOUT
+The page must fill the full width of the area it is shown in.
+- The root is a vertical Stack with gap "lg".
+- Every vertical Stack must set align "stretch", so its children fill the width instead of sizing to their content.
+- Use Grid for side-by-side details, and Table for tabular results, so they spread across the width.
 """
