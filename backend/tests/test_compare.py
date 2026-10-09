@@ -1,4 +1,9 @@
+import json
+
+from langchain_core.messages import AIMessage
+
 from agent import agent
+from agent.prompts import RENDER_UI_PROMPT
 from schema import schema
 
 PLANT_SPEC = {
@@ -63,7 +68,7 @@ def test_unknown_product_code_records_issue_and_skips_comparison(monkeypatch, tm
     monkeypatch.setattr(agent, "PLANT_SPECS_PATH", specs)
     out = agent.load_plant_spec({"supplier_materials": {"product_code": "XX-1"}})
     assert out["issues"][0]["kind"] == "missing_plant_spec"
-    assert agent.route_after_plant_spec(out) == "render_ui"
+    assert agent.route_after_plant_spec(out) == "write_summary"
 
 
 def test_known_product_code_routes_to_comparison(monkeypatch, tmp_path):
@@ -75,23 +80,48 @@ def test_known_product_code_routes_to_comparison(monkeypatch, tmp_path):
     assert agent.route_after_plant_spec(out) == "compare_specs"
 
 
+STATE_WITH_MESSAGE = {"messages": [AIMessage("Lot 42 is non-conforming.")], "issues": []}
 VALID_SPEC = '{"root": "a", "elements": {"a": {"type": "Text", "props": {"text": "hi"}, "children": []}}}'
 
 
 def test_render_ui_parses_the_spec_even_inside_code_fences(fake_llm):
     llm = fake_llm(f"```json\n{VALID_SPEC}\n```")
-    out = agent.render_ui({"issues": []})
+    out = agent.render_ui(STATE_WITH_MESSAGE)
     assert out["ui_spec"]["root"] == "a"
     assert llm.calls == 1
 
 
 def test_render_ui_retries_once_on_invalid_json(fake_llm):
     llm = fake_llm("not json", VALID_SPEC)
-    assert agent.render_ui({"issues": []})["ui_spec"]["root"] == "a"
+    assert agent.render_ui(STATE_WITH_MESSAGE)["ui_spec"]["root"] == "a"
     assert llm.calls == 2
 
 
 def test_render_ui_falls_back_to_an_error_alert(fake_llm):
     fake_llm("not json", '{"root": "missing", "elements": {}}')
-    spec = agent.render_ui({"issues": []})["ui_spec"]
+    spec = agent.render_ui(STATE_WITH_MESSAGE)["ui_spec"]
     assert spec["elements"][spec["root"]]["type"] == "Alert"
+
+
+def test_render_ui_sends_the_prompt_and_the_last_message_to_the_model(fake_llm):
+    llm = fake_llm(VALID_SPEC)
+    state = {"messages": [AIMessage("first"), AIMessage("last message")], "issues": []}
+    agent.render_ui(state)
+    assert llm.prompts == [f"{RENDER_UI_PROMPT}\nlast message"]
+
+
+def test_write_summary_puts_the_outcome_and_the_data_in_the_last_message():
+    issue = {"kind": "non_conforming", "severity": "critical", "message": "Too wet.", "test": "Water"}
+    check = {"test": "Water", "verdict": "fail", "reason": "r", "supplier_result": "0.6 %", "plant_requirement": "max 0.4 %"}
+    state = {"supplier_materials": {"lot": "L1"}, "test_checks": [check], "issues": [issue]}
+    summary = json.loads(agent.write_summary(state)["messages"][-1].content)
+    assert summary["outcome"] == "Non-conforming"
+    assert summary["header"] == {"lot": "L1"}
+    assert summary["tests"] == [{"test": "Water", "verdict": "fail", "supplier_result": "0.6 %", "plant_requirement": "max 0.4 %"}]
+    assert summary["issues"] == [issue]
+
+
+def test_outcome_is_needs_review_for_warnings_and_conforming_without_issues():
+    warning = {"kind": "needs_review", "severity": "warning", "message": "m", "test": "t"}
+    assert agent._outcome([warning]) == "Needs review"
+    assert agent._outcome([]) == "Conforming"

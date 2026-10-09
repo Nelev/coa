@@ -4,6 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
+from langchain_core.messages import AIMessage
 from langchain_core.utils.json import parse_json_markdown
 from langchain_openai import ChatOpenAI
 from langgraph.config import get_stream_writer
@@ -109,7 +110,7 @@ def load_plant_spec(state: AgentState) -> dict:
 
 
 def route_after_plant_spec(state: AgentState) -> str:
-    return "compare_specs" if state.get("plant_spec") else "render_ui"
+    return "compare_specs" if state.get("plant_spec") else "write_summary"
 
 
 def _plant_requirement(test: dict) -> str:
@@ -165,17 +166,31 @@ def compare_specs(state: AgentState) -> dict:
     return {"test_checks": test_checks, "issues": issues}
 
 
+def _outcome(issues: list[dict]) -> str:
+    if any(i["severity"] == "critical" for i in issues):
+        return "Non-conforming"
+    return "Needs review" if issues else "Conforming"
+
+
+def write_summary(state: AgentState) -> dict:
+    """Write the agent's final message: the outcome, certificate header, test results and issues, as compact JSON."""
+    _status("Summarizing the findings")
+    issues = state.get("issues", [])
+    summary = {
+        "outcome": _outcome(issues),
+        "header": state.get("supplier_materials", {}),
+        "tests": [{k: c[k] for k in ("test", "verdict", "supplier_result", "plant_requirement")} for c in state.get("test_checks", [])],
+        "issues": issues,
+    }
+    return {"messages": [AIMessage(json.dumps(summary, ensure_ascii=False, separators=(",", ":")))]}
+
+
 def render_ui(state: AgentState) -> dict:
-    """Ask the model to lay out the results as a json-render UI spec (no model call for a document that is not a CoA)."""
+    """Ask the model to build a json-render UI spec from the agent's last message (no model call for a document that is not a CoA)."""
     _status("Building the report")
     if rejection := _not_a_coa(state):
         return {"ui_spec": _alert_spec("This document is not a Certificate of Analysis", rejection["message"])}
-    data = {
-        "header": state.get("supplier_materials", {}),
-        "tests": [{k: c[k] for k in ("test", "verdict", "supplier_result", "plant_requirement")} for c in state.get("test_checks", [])],
-        "issues": state.get("issues", []),
-    }
-    prompt = RENDER_UI_PROMPT + json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    prompt = f"{RENDER_UI_PROMPT}\n{state['messages'][-1].content}"
     feedback = ""
     for _ in range(2):  # one retry, telling the model what was wrong
         try:
@@ -200,9 +215,11 @@ graph.add_conditional_edges("validate_document", route_after_validation, ["get_d
 graph.add_node("load_plant_spec", load_plant_spec)
 graph.add_node("compare_specs", compare_specs)
 graph.add_edge("get_document_data", "load_plant_spec")
+graph.add_node("write_summary", write_summary)
 graph.add_node("render_ui", render_ui)
-graph.add_conditional_edges("load_plant_spec", route_after_plant_spec, ["compare_specs", "render_ui"])
-graph.add_edge("compare_specs", "render_ui")
+graph.add_conditional_edges("load_plant_spec", route_after_plant_spec, ["compare_specs", "write_summary"])
+graph.add_edge("compare_specs", "write_summary")
+graph.add_edge("write_summary", "render_ui")
 graph.add_edge("render_ui", END)
 
 app = graph.compile()
