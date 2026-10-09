@@ -1,19 +1,7 @@
-import { LayoutDashboard, Settings } from "lucide-react";
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarFooter,
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarGroupLabel,
-  SidebarHeader,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-} from "@/components/ui/sidebar";
+import { Settings } from "lucide-react";
+import { RunsList } from "@/components/runs-list";
+import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "@/components/ui/sidebar";
 import { UploadButton } from "@/components/upload-button";
-
-const main = [{ title: "Runs", icon: LayoutDashboard, active: true }];
 
 export function AppSidebar() {
   return (
@@ -26,21 +14,7 @@ export function AppSidebar() {
         <UploadButton />
       </SidebarHeader>
       <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Platform</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {main.map(({ title, icon: Icon, active }) => (
-                <SidebarMenuItem key={title}>
-                  <SidebarMenuButton isActive={active} render={<a href="#" />}>
-                    <Icon />
-                    <span>{title}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        <RunsList />
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>

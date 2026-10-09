@@ -1,10 +1,10 @@
 "use client";
 
-import { Check, Loader2, X } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 
-import { useReport } from "@/components/report-context";
+import { type Run, useReport } from "@/components/report-context";
+import { RunIcon } from "@/components/run-icon";
 
 // json-render, its shadcn components and zod are only needed once a report arrives; upload() preloads this chunk.
 const ReportRenderer = dynamic(() => import("@/components/report-renderer").then((m) => m.ReportRenderer));
@@ -26,18 +26,9 @@ function Elapsed({ since }: { since: number }) {
   return formatDuration(now - since);
 }
 
-// static, so created once instead of on every render of every row
-const ICONS = {
-  done: <Check className="size-4" />,
-  running: <Loader2 className="size-4 animate-spin" />,
-  failed: <X className="size-4 text-destructive" />,
-};
-
-type Outcome = "running" | "done" | "failed";
-
-// `outcome` is how the run ended, or "running" while it goes on; it applies to the last status, every earlier one is done
-function Progress({ filename, startedAt, statuses, outcome }: { filename: string; startedAt: number; statuses: string[]; outcome: Outcome }) {
-  const running = outcome === "running";
+// the last status shows the run's state (running, done or failed), every earlier one is done
+function Progress({ run: { filename, startedAt, statuses, state } }: { run: Run }) {
+  const running = state === "loading";
   return (
     <div aria-busy={running} aria-live="polite">
       <p className="mb-3 flex gap-2 text-sm text-muted-foreground">
@@ -53,7 +44,7 @@ function Progress({ filename, startedAt, statuses, outcome }: { filename: string
           // the status texts can repeat, so the position is the key
           // biome-ignore lint/suspicious/noArrayIndexKey: the list only grows at the end
           <li key={i} className="flex items-center gap-2">
-            {ICONS[i === statuses.length - 1 ? outcome : "done"]}
+            <RunIcon state={i === statuses.length - 1 ? state : "done"} />
             {status}
           </li>
         ))}
@@ -63,27 +54,30 @@ function Progress({ filename, startedAt, statuses, outcome }: { filename: string
 }
 
 export function ReportView() {
-  const { report } = useReport();
+  const { runs, selectedId } = useReport();
+  const run = runs.find((r) => r.id === selectedId);
 
-  switch (report.status) {
-    case "idle":
-      return <p className="text-sm text-muted-foreground">Upload a CoA PDF from the sidebar to generate a report.</p>;
+  if (!run) return <p className="text-sm text-muted-foreground">Upload CoA PDFs from the sidebar to generate reports.</p>;
+
+  switch (run.state) {
+    case "queued":
+      return <p className="text-sm text-muted-foreground">{run.filename} is waiting for a free slot…</p>;
     case "loading":
-      return <Progress filename={report.filename} startedAt={report.startedAt} statuses={report.statuses} outcome="running" />;
+      return <Progress run={run} />;
     case "error":
       return (
         <div className="flex flex-col gap-4">
           <p role="alert" className="text-sm text-destructive">
-            The document could not be analyzed: {report.message}. Is the backend running?
+            {run.filename} could not be analyzed: {run.message}. Is the backend running?
           </p>
-          {report.run && report.run.statuses.length > 0 && <Progress {...report.run} outcome="failed" />}
+          {run.statuses.length > 0 && <Progress run={run} />}
         </div>
       );
     case "done":
       return (
         <div className="flex flex-col gap-6">
-          <Progress filename={report.filename} startedAt={report.startedAt} statuses={report.statuses} outcome="done" />
-          <ReportRenderer spec={report.spec} />
+          <Progress run={run} />
+          <ReportRenderer spec={run.spec} />
         </div>
       );
   }

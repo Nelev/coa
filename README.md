@@ -16,7 +16,7 @@ and checks the reported results against the **plant's own specification** for th
 | `report` node (prose summary of the issues) | not started |
 | Pause / resume (`is_running`, `is_paused`) | state fields only, not wired |
 | API endpoint: `POST /analyze` runs the agent on an uploaded PDF and returns the UI spec | done (CORS allows `http://localhost:3000` only) |
-| Frontend (Next.js + shadcn dashboard) | sidebar button uploads a PDF to `POST /analyze` and renders the returned report |
+| Frontend (Next.js + shadcn dashboard) | sidebar button uploads one or more PDFs to `POST /analyze` (up to 3 at a time, the rest wait) and the sidebar lists the runs; pick one to see its report |
 
 The plant limits in `backend/docs/plant_specs.json` are **placeholder values**, not real plant requirements.
 
@@ -100,7 +100,7 @@ How the pieces fit:
 | 1. Prompt | `RENDER_UI_PROMPT` in `backend/agent/prompts.py` | Lists the available components and their props (Stack, Grid, Card, Separator, Heading, Text, Badge, Alert, Table) and says how to build the page: outcome badge and recommendation, certificate card, findings as Alerts (critical first), the results table, and a "not assessed" note. The model gets only the header, the per-test verdicts and the issues, and must copy values exactly. |
 | 2. Node | `render_ui` in `backend/agent/agent.py` | Sends the prompt, parses the JSON reply (fenced or not) and stores it as `ui_spec`. Invalid replies are retried once with the error, then replaced by an error Alert. |
 | 3. API | `POST /analyze` in `backend/main.py` | Runs the whole graph on an uploaded PDF, streams what each node is doing, then the `ui_spec`. |
-| 4. Upload | `frontend/components/upload-button.tsx`, `report-context.tsx` | The **Upload document** button in the sidebar posts the PDF to the API and keeps the report state (idle, loading, error, done). |
+| 4. Upload | `frontend/components/upload-button.tsx`, `report-context.tsx` | The **Upload documents** button in the sidebar posts each PDF to the API, at most 3 at a time (one connection each; browsers cap them at about 6 per origin), and keeps one run per file (queued, loading, error, done). |
 | 5. Render | `frontend/components/report-renderer.tsx` | Validates the spec against the catalog (the same nine components, taken from `@json-render/shadcn`) and renders it inside the page's `<main>`. An invalid spec shows an error message instead of rendering. |
 
 The renderer (json-render, the shadcn components and zod) is loaded on demand with `next/dynamic` and preloaded when an
@@ -117,7 +117,7 @@ The findings (critical in red, warnings in yellow) and the results table with on
 
 ![Report findings and results table](docs/images/report-findings.jpg)
 
-To generate it yourself, start the backend and the frontend (see [Running it](#running-it)), click **Upload document**
+To generate it yourself, start the backend and the frontend (see [Running it](#running-it)), click **Upload documents**
 and pick a CoA PDF. The report appears after about a minute.
 
 ## Repository layout
@@ -135,9 +135,10 @@ backend/
   tests/                          unit tests (mocked model)
   main.py                         FastAPI app: /health and POST /analyze
 frontend/           Next.js + shadcn dashboard; app/page.tsx shows the report inside <main>
-  components/upload-button.tsx     sidebar button: picks a PDF and sends it to the API
-  components/report-context.tsx    report state (idle / loading / error / done), the statuses from the stream and the POST /analyze call
-  components/report-view.tsx       what <main> shows for each state, including the list of statuses and the elapsed time
+  components/upload-button.tsx     sidebar button: picks one or more PDFs and sends them to the API
+  components/report-context.tsx    the list of runs (queued / loading / error / done), the statuses from each stream, and the POST /analyze calls with a limit of 3 at once
+  components/runs-list.tsx         sidebar list of runs; click one to select it
+  components/report-view.tsx       what <main> shows for the selected run, including the list of statuses and the elapsed time
   components/report-renderer.tsx   json-render catalog + registry (shadcn components)
 ```
 
@@ -218,7 +219,7 @@ Frontend:
 cd frontend && npm install && npm run dev
 ```
 
-Start the backend (see above) and the frontend, then click **Upload document** in the sidebar and pick a CoA PDF
+Start the backend (see above) and the frontend, then click **Upload documents** in the sidebar and pick a CoA PDF
 (for example `backend/docs/sample_coa_defective.pdf`). The report appears in the page after about a minute. The
 frontend calls `http://localhost:8000`; set `NEXT_PUBLIC_API_URL` to use another address.
 

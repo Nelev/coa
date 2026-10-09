@@ -1,27 +1,45 @@
 "use client";
 
-import { createContext, type ReactNode, useContext, useState } from "react";
+import { createContext, type ReactNode, useContext, useRef, useState } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+// browsers allow about 6 connections per origin to an HTTP/1.1 server; each analysis holds one open, so stay well under
+const MAX_PARALLEL = 3;
+
 // statuses: what the agent reported while it worked, in order; the last one is what it is doing now.
-type Run = { filename: string; startedAt: number; statuses: string[] };
+// queued: waiting for a free slot; error: `message` says why, `statuses` how far the agent got.
+export type Run = {
+  id: number;
+  filename: string;
+  state: "queued" | "loading" | "done" | "error";
+  startedAt: number;
+  statuses: string[];
+  spec?: unknown;
+  message?: string;
+};
 
-type Report =
-  | { status: "idle" }
-  | ({ status: "loading" } & Run)
-  | { status: "error"; message: string; run?: Run } // run: how far the agent got, if the stream had started
-  | ({ status: "done"; spec: unknown } & Run); // the statuses are kept next to the report
+const ReportContext = createContext<{
+  runs: Run[];
+  selectedId: number | null;
+  select: (id: number) => void;
+  upload: (files: File[]) => void;
+} | null>(null);
 
-const ReportContext = createContext<{ report: Report; upload: (file: File) => Promise<void> } | null>(null);
-
-// Holds the report shared by the sidebar's upload button and the page content.
+// Holds the runs shared by the sidebar and the page content, and starts them at most MAX_PARALLEL at a time.
 export function ReportProvider({ children }: { children: ReactNode }) {
-  const [report, setReport] = useState<Report>({ status: "idle" });
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const waiting = useRef<{ id: number; file: File }[]>([]);
+  const active = useRef(0);
+  const nextId = useRef(0);
 
-  async function upload(file: File) {
-    setReport({ status: "loading", filename: file.name, startedAt: Date.now(), statuses: [] });
-    void import("@/components/report-renderer"); // preload the renderer chunk while the agent runs
+  function update(id: number, change: Partial<Run>) {
+    setRuns((all) => all.map((run) => (run.id === id ? { ...run, ...change } : run)));
+  }
+
+  async function analyze(id: number, file: File) {
+    update(id, { state: "loading", startedAt: Date.now() });
     try {
       const body = new FormData();
       body.append("file", file);
@@ -41,11 +59,11 @@ export function ReportProvider({ children }: { children: ReactNode }) {
           for (const line of lines.filter(Boolean)) {
             const event = JSON.parse(line);
             if ("status" in event) {
-              setReport((r) => (r.status === "loading" ? { ...r, statuses: [...r.statuses, event.status] } : r));
+              setRuns((all) => all.map((run) => (run.id === id ? { ...run, statuses: [...run.statuses, event.status] } : run)));
             } else if ("error" in event) {
               throw new Error(event.error);
             } else if ("done" in event) {
-              setReport((r) => (r.status === "loading" ? { ...r, status: "done", spec: event.done } : r));
+              update(id, { state: "done", spec: event.done });
               return;
             }
           }
@@ -55,16 +73,33 @@ export function ReportProvider({ children }: { children: ReactNode }) {
       }
       throw new Error("the connection closed before the report was ready");
     } catch (error) {
-      const message = error instanceof Error ? error.message : "the upload failed";
-      setReport((r) =>
-        r.status === "loading"
-          ? { status: "error", message, run: { filename: r.filename, startedAt: r.startedAt, statuses: r.statuses } }
-          : { status: "error", message },
-      );
+      update(id, { state: "error", message: error instanceof Error ? error.message : "the upload failed" });
     }
   }
 
-  return <ReportContext value={{ report, upload }}>{children}</ReportContext>;
+  function pump() {
+    while (active.current < MAX_PARALLEL) {
+      const next = waiting.current.shift();
+      if (!next) return;
+      active.current++;
+      void analyze(next.id, next.file).finally(() => {
+        active.current--;
+        pump();
+      });
+    }
+  }
+
+  function upload(files: File[]) {
+    const added = files.map((file) => ({ id: nextId.current++, file }));
+    if (added.length === 0) return;
+    void import("@/components/report-renderer"); // preload the renderer chunk while the agent runs
+    setRuns((all) => [...all, ...added.map(({ id, file }): Run => ({ id, filename: file.name, state: "queued", startedAt: 0, statuses: [] }))]);
+    setSelectedId((current) => current ?? added[0].id); // don't pull the user away from a report they are reading
+    waiting.current.push(...added);
+    pump();
+  }
+
+  return <ReportContext value={{ runs, selectedId, select: setSelectedId, upload }}>{children}</ReportContext>;
 }
 
 export function useReport() {
