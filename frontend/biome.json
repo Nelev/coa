@@ -11,11 +11,5 @@
     "rules": { "preset": "recommended" },
     "domains": { "next": "recommended", "react": "recommended" }
   },
-  "overrides": [
-    {
-      "includes": ["components/app-sidebar.tsx"],
-      "linter": { "rules": { "a11y": { "useValidAnchor": "off" } } }
-    }
-  ],
   "assist": { "actions": { "source": { "organizeImports": "on" } } }
 }

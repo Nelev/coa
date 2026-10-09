@@ -1,32 +1,50 @@
 "use client";
 
-import { createContext, type ReactNode, useContext, useEffect, useState } from "react";
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
+
+import { isActive } from "@/lib/runs";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 const POLL_MS = 1000;
 
+export type Outcome = "Conforming" | "Needs review" | "Non-conforming" | "Not a CoA";
+
+// what the list shows of a finished analysis, without the report
+export type RunResult = {
+  outcome: Outcome;
+  counts: { pass: number; fail: number; review: number };
+  product: string | null;
+  lot: string | null;
+  supplier: string | null;
+};
+
 // statuses: what the agent reported while it worked, in order; the last one is what it is doing now.
 // queued: waiting on the server for a free worker; error: `message` says why, `statuses` how far the agent got.
-// startedAt: when the server started the run, as a Date.now() value.
+// startedAt / finishedAt: when the server started and ended the run, as Date.now() values (0 while that has not happened).
+// local: the run is not on the server (an upload that failed), so there is no report page for it.
 export type Run = {
   id: string;
   filename: string;
   state: "queued" | "loading" | "done" | "error";
   startedAt: number;
+  finishedAt: number;
   statuses: string[];
-  spec?: unknown;
+  result?: RunResult;
   message?: string;
+  local?: boolean;
 };
 
 // a job as GET /jobs returns it; the report (ui_spec) is only in GET /jobs/{id}
-type Job = {
+export type Job = {
   id: string;
   filename: string;
   status: "queued" | "running" | "done" | "error";
   statuses: string[];
   error: string | null;
   started_at: number | null;
+  finished_at: number | null;
+  result: RunResult | null;
   ui_spec?: unknown;
 };
 
@@ -39,15 +57,17 @@ function toRun(job: Job, previous?: Run): Run {
     filename: job.filename,
     state: STATES[job.status],
     startedAt: job.started_at ?? 0,
+    finishedAt: job.finished_at ?? 0,
     statuses: job.statuses,
+    result: job.result ?? undefined,
     message: job.error ?? undefined,
-    spec: previous?.spec,
   };
   const unchanged =
     previous?.state === run.state &&
     previous.statuses.length === run.statuses.length &&
     previous.message === run.message &&
-    previous.startedAt === run.startedAt;
+    previous.startedAt === run.startedAt &&
+    previous.finishedAt === run.finishedAt;
   return unchanged ? previous : run;
 }
 
@@ -61,6 +81,17 @@ function fetchJobs(): Promise<Job[]> {
   return request("/jobs").then((response) => response.json());
 }
 
+// the reports seen so far: one of a finished run never changes, so opening it again (previous / next, back to the list) costs nothing
+const reports = new Map<string, unknown>();
+
+// the report of a finished run; null while the job has none yet
+export async function fetchReport(id: string): Promise<unknown> {
+  if (reports.has(id)) return reports.get(id);
+  const job = (await request(`/jobs/${id}`).then((response) => response.json())) as Job;
+  if (job.ui_spec != null) reports.set(id, job.ui_spec);
+  return job.ui_spec;
+}
+
 // the server's jobs replace what we know of them; runs the server does not have (an upload that failed) stay
 function merge(jobs: Job[], runs: Run[]): Run[] {
   const known = new Map(runs.map((run) => [run.id, run]));
@@ -69,51 +100,61 @@ function merge(jobs: Job[], runs: Run[]): Run[] {
   return merged.length === runs.length && merged.every((run, i) => run === runs[i]) ? runs : merged;
 }
 
+// the renderer chunk (json-render, shadcn components, zod) is big: load it before a report is opened
+export const preloadReport = () => void import("@/components/report-renderer");
+
+const isPdf = (file: File) => file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+
 const ReportContext = createContext<{
   runs: Run[];
-  selectedId: string | null;
-  select: (id: string) => void;
+  // how many runs are queued or being analyzed
+  running: number;
+  // false until the first answer of the server (or its first failure), so a page can tell "loading" from "no such run"
+  loaded: boolean;
+  // the server could not be reached by the last request
+  offline: boolean;
+  // something the user should know about their last upload, e.g. files that were skipped
+  notice: string | null;
+  dismissNotice: () => void;
   upload: (files: File[]) => void;
 } | null>(null);
 
-// Holds the runs shared by the sidebar and the page content. The server queues and runs the jobs; this polls it for their
-// progress while any is unfinished, and loads the list again when the page opens, so a reload loses nothing.
+// Holds the runs shared by every page. The server queues and runs the jobs; this polls it for their progress while any is
+// unfinished, and loads the list again when the page opens, so a reload loses nothing.
 export function ReportProvider({ children }: { children: ReactNode }) {
   const [runs, setRuns] = useState<Run[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [offline, setOffline] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const polling = runs.some((run) => run.state === "queued" || run.state === "loading");
-  const selected = runs.find((run) => run.id === selectedId);
-  const needsSpec = selected?.state === "done" && selected.spec === undefined;
+  const running = runs.filter(isActive).length;
+  const polling = running > 0;
+  const inFlight = useRef(false);
 
-  // restore the runs of an earlier visit, selecting the latest
-  useEffect(() => {
-    fetchJobs()
-      .then((jobs) => {
-        setRuns((all) => merge(jobs, all));
-        setSelectedId((current) => current ?? jobs.at(-1)?.id ?? null);
-      })
-      .catch(() => {}); // the server is unreachable: the page starts empty
+  const refresh = useCallback(async () => {
+    if (inFlight.current) return; // a slow answer must not pile requests up
+    inFlight.current = true;
+    try {
+      const jobs = await fetchJobs();
+      setRuns((all) => merge(jobs, all));
+      setOffline(false);
+    } catch {
+      setOffline(true); // keep what we show and try again
+    } finally {
+      inFlight.current = false;
+    }
   }, []);
+
+  // restore the runs of an earlier visit
+  useEffect(() => {
+    refresh().finally(() => setLoaded(true));
+  }, [refresh]);
 
   useEffect(() => {
     if (!polling) return;
-    const timer = setInterval(() => {
-      fetchJobs()
-        .then((jobs) => setRuns((all) => merge(jobs, all)))
-        .catch(() => {}); // the server is unreachable for now: keep what we show and try again
-    }, POLL_MS);
+    const timer = setInterval(refresh, POLL_MS);
     return () => clearInterval(timer);
-  }, [polling]);
-
-  // the list has no reports: fetch the selected one when its job is done
-  useEffect(() => {
-    if (!needsSpec) return;
-    request(`/jobs/${selectedId}`)
-      .then((response) => response.json() as Promise<Job>)
-      .then((job) => setRuns((all) => all.map((run) => (run.id === selectedId ? { ...run, spec: job.ui_spec } : run))))
-      .catch(() => {}); // fetched again when the run is selected again
-  }, [needsSpec, selectedId]);
+  }, [polling, refresh]);
 
   async function uploadOne(file: File): Promise<Run> {
     try {
@@ -122,22 +163,31 @@ export function ReportProvider({ children }: { children: ReactNode }) {
       return toRun(await request("/jobs", { method: "POST", body }).then((response) => response.json()));
     } catch (error) {
       const message = error instanceof Error ? error.message : "the upload failed";
-      return { id: crypto.randomUUID(), filename: file.name, state: "error", startedAt: 0, statuses: [], message };
+      return {
+        id: crypto.randomUUID(),
+        filename: file.name,
+        state: "error",
+        startedAt: 0,
+        finishedAt: Date.now(),
+        statuses: [],
+        message,
+        local: true,
+      };
     }
   }
 
   function upload(files: File[]) {
-    if (files.length === 0) return;
-    void import("@/components/report-renderer"); // preload the renderer chunk while the agent runs
-    for (const file of files) {
-      void uploadOne(file).then((run) => {
-        setRuns((all) => [...all, run]);
-        setSelectedId((current) => current ?? run.id); // don't pull the user away from a report they are reading
-      });
+    const pdfs = files.filter(isPdf);
+    const skipped = files.length - pdfs.length;
+    if (skipped > 0) setNotice(`${skipped} ${skipped === 1 ? "file was" : "files were"} skipped: only PDF documents can be analyzed.`);
+    if (pdfs.length === 0) return;
+    preloadReport(); // while the agent runs
+    for (const file of pdfs) {
+      void uploadOne(file).then((run) => setRuns((all) => [...all, run]));
     }
   }
 
-  return <ReportContext value={{ runs, selectedId, select: setSelectedId, upload }}>{children}</ReportContext>;
+  return <ReportContext value={{ runs, running, loaded, offline, notice, dismissNotice: () => setNotice(null), upload }}>{children}</ReportContext>;
 }
 
 export function useReport() {

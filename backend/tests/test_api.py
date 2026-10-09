@@ -1,6 +1,8 @@
 import io
+import sqlite3
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +15,13 @@ from agent.agent import DOCS_DIR, graph
 from jobs import Jobs
 from schema.schema import DocumentCheck
 
+RESULT = {
+    "outcome": "Conforming",
+    "counts": {"pass": 3, "fail": 0, "review": 0},
+    "product": "Citric Acid",
+    "lot": "L1",
+    "supplier": "Alpina",
+}
 SPEC = {"root": "a", "elements": {"a": {"type": "Text", "props": {"text": "hi"}, "children": []}}}
 CITRIC_ACID_PDF = (DOCS_DIR / "sample_coa_citric_acid.pdf").read_bytes()
 
@@ -27,7 +36,7 @@ class FakeAgent:
 
     def get_state(self, config):
         done = config["configurable"]["thread_id"] in self.finished and self.spec is not None
-        return SimpleNamespace(values={"ui_spec": self.spec} if done else {})
+        return SimpleNamespace(values={"ui_spec": self.spec, "result": RESULT} if done else {})
 
     def stream(self, inputs, config, stream_mode):
         assert stream_mode == "custom"
@@ -95,6 +104,8 @@ def test_a_job_records_the_status_of_each_node_then_the_ui_spec(start_app, monke
     assert job["status"] == "done"
     assert job["statuses"] == ["Reading the PDF", "Building the report"]
     assert job["ui_spec"] == SPEC
+    assert job["result"] == RESULT
+    assert job["started_at"] <= job["finished_at"]
     assert agent.calls[0] == (
         {"document_path": seen["path"]},
         {"configurable": {"thread_id": created["id"]}},
@@ -113,6 +124,7 @@ def test_the_listing_leaves_out_the_report(start_app, monkeypatch):
     jobs = client.get("/jobs").json()
     assert [job["filename"] for job in jobs] == ["a.pdf", "b.pdf"]
     assert all("ui_spec" not in job and job["status"] == "done" for job in jobs)
+    assert all(job["result"] == RESULT and job["finished_at"] for job in jobs)  # what the overview shows without the report
 
 
 def test_an_agent_failure_ends_the_job_with_an_error(start_app, monkeypatch):
@@ -127,6 +139,7 @@ def test_an_agent_failure_ends_the_job_with_an_error(start_app, monkeypatch):
     job = wait_for_end(client, submit(client)["id"])
 
     assert (job["status"], job["error"], job["statuses"]) == ("error", "model unavailable", ["Reading the PDF"])
+    assert job["finished_at"] and job["result"] is None
 
 
 def test_an_agent_that_ends_without_a_report_is_an_error(start_app, monkeypatch):
@@ -173,6 +186,13 @@ def test_the_real_graph_reports_the_nodes_it_runs(start_app, fake_llm):
     # the extraction, plant lookup and comparison are routed around for a document that is not a CoA
     assert job["statuses"] == ["Reading the PDF", "Checking it is a CoA", "Building the report"]
     assert job["status"] == "done" and "root" in job["ui_spec"]
+    assert job["result"] == {
+        "outcome": "Not a CoA",
+        "counts": {"pass": 0, "fail": 0, "review": 0},
+        "product": None,
+        "lot": None,
+        "supplier": None,
+    }
 
 
 def interrupted_job(directory, **compile_options):
@@ -229,3 +249,14 @@ def test_health_still_works_without_the_api_key(monkeypatch):
 def test_the_frontend_origin_is_allowed_by_cors(path, method):
     response = TestClient(main.app).options(path, headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": method})
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
+def test_a_database_from_before_the_result_columns_is_upgraded(tmp_path):
+    with closing(sqlite3.connect(tmp_path / "jobs.db")) as db, db:
+        columns = "id TEXT PRIMARY KEY, filename TEXT NOT NULL, status TEXT NOT NULL, statuses TEXT NOT NULL DEFAULT '[]'"
+        db.execute(f"CREATE TABLE jobs ({columns}, ui_spec TEXT, error TEXT, started_at INTEGER)")
+        db.execute("INSERT INTO jobs (id, filename, status) VALUES ('old', 'old.pdf', 'done')")
+
+    job = Jobs(tmp_path).get("old")
+
+    assert job["filename"] == "old.pdf" and job["result"] is None and job["finished_at"] is None

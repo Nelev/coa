@@ -1,0 +1,69 @@
+import type { Run } from "@/components/report-context";
+
+// What the overview shows and filters by: a run is in progress, needs attention, conforms, or (while it is not done) is none of these yet.
+export type Filter = "all" | "progress" | "attention" | "conforming";
+export type Sort = "priority" | "newest";
+
+// queued or being analyzed: the run will still change
+export function isActive(run: Run): boolean {
+  return run.state === "queued" || run.state === "loading";
+}
+
+export function filterOf(run: Run): Exclude<Filter, "all"> {
+  if (isActive(run)) return "progress";
+  return run.state === "done" && run.result?.outcome === "Conforming" ? "conforming" : "attention"; // a failed run, a non-conforming or unclear certificate
+}
+
+// lower comes first: what is running, then the worst findings, then what is fine
+function rank(run: Run): number {
+  if (run.state === "loading") return 0;
+  if (run.state === "queued") return 1;
+  if (run.state === "error") return 2;
+  if (!run.result) return 5; // analyzed before results were stored: look at it like a review
+  switch (run.result.outcome) {
+    case "Non-conforming":
+      return 3;
+    case "Not a CoA":
+      return 4;
+    case "Needs review":
+      return 5;
+    case "Conforming":
+      return 6;
+  }
+}
+
+// the server lists the oldest first, so the newest come first once reversed; the sort is stable, so runs of the same priority keep that order
+export function sortRuns(runs: Run[], sort: Sort): Run[] {
+  const newest = [...runs].reverse();
+  return sort === "priority" ? newest.sort((a, b) => rank(a) - rank(b)) : newest;
+}
+
+// `needle` is already trimmed and lower-cased, so a list is not normalized once per run
+export function matchesQuery(run: Run, needle: string): boolean {
+  return [run.filename, run.result?.product, run.result?.lot, run.result?.supplier].some((text) => text?.toLowerCase().includes(needle));
+}
+
+export function visibleRuns(runs: Run[], filter: Filter, query: string, sort: Sort): Run[] {
+  const needle = query.trim().toLowerCase();
+  return sortRuns(
+    runs.filter((run) => (filter === "all" || filterOf(run) === filter) && (!needle || matchesQuery(run, needle))),
+    sort,
+  );
+}
+
+export type Tally = { all: number; progress: number; attention: number; conforming: number; nonConforming: number; review: number; queued: number };
+
+export function tally(runs: Run[]): Tally {
+  const counts: Tally = { all: runs.length, progress: 0, attention: 0, conforming: 0, nonConforming: 0, review: 0, queued: 0 };
+  for (const run of runs) {
+    counts[filterOf(run)] += 1;
+    if (run.state === "queued") counts.queued += 1;
+    if (run.result?.outcome === "Non-conforming") counts.nonConforming += 1;
+    if (run.result?.outcome === "Needs review") counts.review += 1;
+  }
+  return counts;
+}
+
+export function totalTests({ counts }: NonNullable<Run["result"]>): number {
+  return counts.pass + counts.fail + counts.review;
+}

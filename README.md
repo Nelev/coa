@@ -15,8 +15,8 @@ and checks the reported results against the **plant's own specification** for th
 | Supplier-approval and shelf-life checks | not started |
 | `report` node (prose summary of the issues) | not started |
 | Pause / resume (`is_running`, `is_paused`) | state fields only, not wired |
-| API: `POST /jobs` queues the agent on an uploaded PDF; `GET /jobs` and `GET /jobs/{id}` return the progress and the UI spec | done (jobs are kept in SQLite and survive restarts; CORS allows `http://localhost:3000` only) |
-| Frontend (Next.js + shadcn dashboard) | sidebar button uploads one or more PDFs to `POST /jobs` and polls the jobs; the sidebar lists the runs (they come back after a reload); pick one to see its report |
+| API: `POST /jobs` queues the agent on an uploaded PDF; `GET /jobs` and `GET /jobs/{id}` return the progress and the UI spec | done (jobs are kept in SQLite and survive restarts; CORS allows `http://localhost:3000` unless `CORS_ORIGINS` (comma-separated) says otherwise) |
+| Frontend (Next.js + shadcn dashboard) | dark theme. `/` is an overview: counts that double as filters (all, needs attention, in progress, conforming), search, sort by priority, and one row per run with its outcome, verdict counts and live progress. `/runs/[id]` is the report (with an Activity tab of the steps). Upload with the button or by dropping PDFs anywhere; runs come back after a reload |
 
 The plant limits in `backend/docs/plant_specs.json` are **placeholder values**, not real plant requirements.
 
@@ -100,7 +100,7 @@ How the pieces fit:
 | 1. Prompt | `RENDER_UI_PROMPT` in `backend/agent/prompts.py` | Lists the available components and their props (Stack, Grid, Card, Separator, Heading, Text, Badge, Alert, Table) and says how to build the page: outcome badge and recommendation, certificate card, findings as Alerts (critical first), the results table, and a "not assessed" note. The model gets only the header, the per-test verdicts and the issues, and must copy values exactly. |
 | 2. Node | `render_ui` in `backend/agent/agent.py` | Sends the prompt, parses the JSON reply (fenced or not) and stores it as `ui_spec`. Invalid replies are retried once with the error, then replaced by an error Alert. |
 | 3. API | `POST /jobs` in `backend/main.py` | Queues the whole graph for an uploaded PDF; a worker runs it, records what each node is doing, then the `ui_spec`. |
-| 4. Upload | `frontend/components/upload-button.tsx`, `report-context.tsx` | The **Upload documents** button in the sidebar posts each PDF to the API, which queues them, and polls the jobs once a second while any is unfinished. There is one run per file (queued, loading, error, done). |
+| 4. Upload | `frontend/components/upload-button.tsx`, `report-context.tsx` | The **Upload documents** button (or a drop anywhere on the page) posts each PDF to the API, which queues them, and polls the jobs once a second while any is unfinished. There is one run per file (queued, loading, error, done). |
 | 5. Render | `frontend/components/report-renderer.tsx` | Validates the spec against the catalog (the same nine components, taken from `@json-render/shadcn`) and renders it inside the page's `<main>`. An invalid spec shows an error message instead of rendering. |
 
 The renderer (json-render, the shadcn components and zod) is loaded on demand with `next/dynamic` and preloaded when an
@@ -135,11 +135,15 @@ backend/
   tests/                          unit tests (mocked model)
   main.py                         FastAPI app: /health, POST /jobs, GET /jobs and GET /jobs/{id}, plus the job queue and its workers
   jobs.py                         the jobs table (SQLite) and the uploaded PDFs of unfinished jobs; data lives in backend/data/ (gitignored)
-frontend/           Next.js + shadcn dashboard; app/page.tsx shows the report inside <main>
-  components/upload-button.tsx     sidebar button: picks one or more PDFs and sends them to the API
+frontend/           Next.js + shadcn dashboard, dark only (tokens in app/globals.css, contrast checked by lib/contrast.test.ts)
+  app/page.tsx                     the overview; app/runs/[id]/page.tsx is the report page
+  components/upload-button.tsx     picks one or more PDFs and sends them to the API
   components/report-context.tsx    the list of runs (queued / loading / error / done), the jobs polled from the API, and the POST /jobs calls
-  components/runs-list.tsx         sidebar list of runs; click one to select it
-  components/report-view.tsx       what <main> shows for the selected run, including the list of statuses and the elapsed time
+  components/overview.tsx          filter tiles, search and sort, the list of rows, empty / offline states, j / k keys
+  components/run-row.tsx           one row: status, product and lot, verdict counts or progress, time
+  components/run-page.tsx          the report page: header, previous / next run, Report and Activity tabs
+  components/page-dropzone.tsx     drop PDFs anywhere; components/live-announcer.tsx tells screen readers when a run ends
+  lib/runs.ts                      filter, search, priority sort and tallies of the runs
   components/report-renderer.tsx   json-render catalog + registry (shadcn components)
 ```
 
@@ -208,6 +212,8 @@ A job looks like this:
 | `ui_spec` | the report, in `GET /jobs/{id}` only, once the job is `done`. The worker reads it from the run's checkpoint once the graph has finished, so only the report is copied into the job |
 | `error` | why the job failed, when `status` is `error` |
 | `started_at` | when a worker took the job, in milliseconds since the epoch |
+| `finished_at` | when the job ended (done or error), in milliseconds since the epoch |
+| `result` | what the job list shows without the report, once the job is done: `outcome` (Conforming, Needs review, Non-conforming or Not a CoA), `counts` of pass / fail / review, `product`, `lot`, `supplier`. Written by `write_summary`, or by `render_ui` for a document that is not a CoA |
 
 How the queue works:
 
@@ -235,7 +241,7 @@ Frontend:
 cd frontend && npm install && npm run dev
 ```
 
-Start the backend (see above) and the frontend, then click **Upload documents** in the sidebar and pick a CoA PDF
+Start the backend (see above) and the frontend, then click **Upload documents** and pick a CoA PDF
 (for example `backend/docs/sample_coa_defective.pdf`). The report appears in the page after about a minute. The
 frontend calls `http://localhost:8000`; set `NEXT_PUBLIC_API_URL` to use another address.
 

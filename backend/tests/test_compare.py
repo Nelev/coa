@@ -125,3 +125,10 @@ def test_outcome_is_needs_review_for_warnings_and_conforming_without_issues():
     warning = {"kind": "needs_review", "severity": "warning", "message": "m", "test": "t"}
     assert agent._outcome([warning]) == "Needs review"
     assert agent._outcome([]) == "Conforming"
+
+
+def test_the_summary_counts_the_verdicts():
+    verdicts = [("a", "pass"), ("b", "pass"), ("c", "fail")]
+    checks = [{"test": t, "verdict": v, "supplier_result": "x", "plant_requirement": "y"} for t, v in verdicts]
+    summary = json.loads(agent.write_summary({"test_checks": checks, "issues": []})["messages"][0].content)
+    assert summary["counts"] == {"pass": 2, "fail": 1, "review": 0}
