@@ -4,7 +4,7 @@ import queue
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from agent.agent import graph
 from auth import require_user
 from jobs import Jobs
+from notify import send_failure_mail
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,12 @@ def run_job(job_id: str) -> None:
             raise RuntimeError("the agent finished without a report")
         store.finish(job_id, values["ui_spec"], values.get("result"))
     except Exception as error:
-        store.fail(job_id, str(error) or type(error).__name__)
+        message = str(error) or type(error).__name__
+        store.fail(job_id, message)
+        try:
+            send_failure_mail(store.get(job_id, with_spec=False), message)
+        except Exception:  # a broken mail server must not take the worker down
+            logger.exception("failure mail for job %s", job_id)
 
 
 def worker() -> None:
@@ -93,9 +99,9 @@ router = APIRouter(dependencies=[Depends(require_user)])
 
 
 @router.post("/jobs", status_code=202)
-def create_job(file: UploadFile):
+def create_job(file: UploadFile, user: Annotated[dict, Depends(require_user)]):
     """Queue the agent to analyze an uploaded CoA PDF. Poll GET /jobs/{id} for its progress and result."""
-    job_id = store.create(file.filename or "document.pdf", file.file)
+    job_id = store.create(file.filename or "document.pdf", file.file, owner=user["sub"])
     job = store.get(job_id)  # before a worker can take it, so the answer is still "queued"
     pending.put(job_id)
     return job

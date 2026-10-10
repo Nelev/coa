@@ -114,6 +114,16 @@ def test_a_job_records_the_status_of_each_node_then_the_ui_spec(start_app, monke
     assert Path(seen["path"]).read_bytes() == b"%PDF-fake"  # the certificate is kept: it is the record the decision is about
 
 
+def test_a_job_records_who_uploaded_it(start_app, monkeypatch):
+    client = start_app()
+    monkeypatch.setattr(main, "agent_app", FakeAgent("Reading the PDF"))
+
+    created = submit(client)
+
+    assert created["owner"] == "user_test"  # the sign-in id the signed_in fixture acts as
+    assert client.get(f"/jobs/{created['id']}").json()["owner"] == "user_test"
+
+
 def test_the_certificate_can_be_opened_after_the_job_ends(start_app, monkeypatch):
     client = start_app()
     monkeypatch.setattr(main, "agent_app", FakeAgent())
