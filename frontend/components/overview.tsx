@@ -80,14 +80,14 @@ export function Overview() {
           The server cannot be reached. What you see may be out of date; it keeps trying.
         </p>
       )}
-      {notice && (
+      {notice ? (
         <p role="status" className="flex items-center justify-between gap-2 rounded-lg bg-warning/10 px-4 py-3 text-sm text-warning">
           {notice}
           <Button variant="ghost" size="icon-xs" aria-label="Dismiss" onClick={dismissNotice}>
             <X />
           </Button>
         </p>
-      )}
+      ) : null}
 
       {!loaded ? (
         <ListSkeleton />

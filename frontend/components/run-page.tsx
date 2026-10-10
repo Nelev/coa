@@ -1,14 +1,15 @@
 "use client";
 
-import { ArrowLeft, ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, FileText } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
-import { fetchReport, type Run, useReport } from "@/components/report-context";
+import { DecisionPanel } from "@/components/decision-panel";
+import { fetchReport, pdfUrl, type Run, useReport } from "@/components/report-context";
 import { RunProgress } from "@/components/run-progress";
-import { StatusChip } from "@/components/status-chip";
+import { DecisionChip, StatusChip } from "@/components/status-chip";
 import { Steps } from "@/components/steps";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -140,9 +141,18 @@ export function RunPage() {
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="max-w-full truncate text-xl font-semibold">{run.filename}</h1>
             <StatusChip run={run} />
+            <DecisionChip run={run} />
           </div>
         </div>
-        <Neighbours runs={runs} id={run.id} />
+        <div className="flex flex-wrap items-center gap-3">
+          {run.hasPdf && (
+            <Button variant="outline" size="sm" render={<a href={pdfUrl(run.id)} target="_blank" rel="noreferrer" />} nativeButton={false}>
+              <FileText />
+              Open the CoA
+            </Button>
+          )}
+          <Neighbours runs={runs} id={run.id} />
+        </div>
       </div>
 
       <Tabs value={tab} onValueChange={(value) => setChosen(String(value))}>
@@ -150,8 +160,9 @@ export function RunPage() {
           <TabsTrigger value="report">Report</TabsTrigger>
           <TabsTrigger value="activity">Activity</TabsTrigger>
         </TabsList>
-        <TabsContent value="report">
+        <TabsContent value="report" className="flex flex-col gap-6">
           <Report run={run} spec={spec} failed={failed} />
+          {run.state === "done" && <DecisionPanel run={run} />}
         </TabsContent>
         <TabsContent value="activity">
           <Steps run={run} />

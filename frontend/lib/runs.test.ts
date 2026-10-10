@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Outcome, Run } from "@/components/report-context";
-import { filterOf, matchesQuery, sortRuns, tally, visibleRuns } from "@/lib/runs";
+import { awaitingDecision, filterOf, matchesQuery, requiresReason, sortRuns, tally, visibleRuns } from "@/lib/runs";
 
 function run(id: string, state: Run["state"], outcome?: Outcome, extra: Partial<Run> = {}): Run {
   const result = outcome && { outcome, counts: { pass: 1, fail: 0, review: 0 }, product: "Citric Acid", lot: `L-${id}`, supplier: "Alpina" };
@@ -70,6 +70,48 @@ describe("visibleRuns", () => {
 
 describe("tally", () => {
   it("counts the runs per filter and the details the tiles show", () => {
-    expect(tally(RUNS)).toEqual({ all: 7, progress: 2, attention: 4, conforming: 1, nonConforming: 1, review: 1, queued: 1 });
+    expect(tally(RUNS)).toEqual({ all: 7, progress: 2, attention: 4, conforming: 1, nonConforming: 1, review: 1, queued: 1, awaiting: 4 });
+  });
+});
+
+describe("decisions", () => {
+  const approved = run("approved", "done", "Conforming", { decision: "approved" });
+  const rejected = run("rejected", "done", "Non-conforming", { decision: "rejected" });
+  const held = run("held", "done", "Needs review", { decision: "on_hold" });
+  const open = run("open", "done", "Conforming");
+
+  it("waits for a decision on what is analyzed and not approved or rejected yet, a lot on hold included", () => {
+    expect([approved, rejected, held, open, run("busy", "loading"), run("failed", "error")].map(awaitingDecision)).toEqual([
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+    ]);
+  });
+
+  it("filters by what awaits a decision, and counts it", () => {
+    const all = [approved, rejected, held, open];
+    expect(visibleRuns(all, "decision", "", "priority").map((r) => r.id)).toEqual(["held", "open"]);
+    expect(tally(all).awaiting).toBe(2);
+  });
+
+  it("keeps a decided run in its group, so the outcome tiles still add up", () => {
+    expect(filterOf(rejected)).toBe("attention");
+    expect(filterOf(approved)).toBe("conforming");
+  });
+
+  it("lists decided runs after everything that still needs a person", () => {
+    const all = [approved, rejected, held, open];
+    expect(sortRuns(all, "priority").map((r) => r.id)).toEqual(["held", "open", "rejected", "approved"]);
+  });
+
+  it("asks for a reason to reject or hold, and to approve what does not conform", () => {
+    expect(requiresReason("approved", open)).toBe(false);
+    expect(requiresReason("approved", held)).toBe(true);
+    expect(requiresReason("approved", run("legacy", "done"))).toBe(true); // an outcome that is not known is not assumed to conform
+    expect(requiresReason("rejected", open)).toBe(true);
+    expect(requiresReason("on_hold", open)).toBe(true);
   });
 });

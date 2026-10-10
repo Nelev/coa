@@ -48,6 +48,11 @@ describe("RunRow", () => {
     expect(html).toContain("Checking it is a CoA");
   });
 
+  it("shows what a person decided about the lot", () => {
+    expect(row({ result: result(), decision: "rejected", decidedBy: "QA Anna" })).toContain("Rejected");
+    expect(row({ result: result() })).not.toContain("Rejected");
+  });
+
   it("says why a run failed", () => {
     expect(row({ state: "error", message: "model unavailable" })).toContain("model unavailable");
   });
