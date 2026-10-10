@@ -12,22 +12,21 @@ and checks the reported results against the **plant's own specification** for th
 | Structured extraction of the CoA (LLM) | done |
 | Comparison against plant specs (LLM) → `issues` | done |
 | Report page: model lays out the results as a json-render UI spec, rendered by the frontend | done |
-| Supplier-approval and shelf-life checks | not started |
 | `report` node (prose summary of the issues) | not started |
 | Pause / resume (`is_running`, `is_paused`) | state fields only, not wired |
-| API: `POST /jobs` queues the agent on an uploaded PDF; `GET /jobs` and `GET /jobs/{id}` return the progress and the UI spec | done (jobs are kept in SQLite and survive restarts; CORS allows `http://localhost:3000` unless `CORS_ORIGINS` (comma-separated) says otherwise) |
-| Frontend (Next.js + shadcn dashboard) | dark theme. `/` is an overview: counts that double as filters (all, needs attention, in progress, conforming), search, sort by priority, and one row per run with its outcome, verdict counts and live progress. `/runs/[id]` is the report (with an Activity tab of the steps). Upload with the button or by dropping PDFs anywhere; runs come back after a reload |
+| API: `POST /jobs` queues the agent on an uploaded PDF; `GET /jobs` and `GET /jobs/{id}` return the progress and the UI spec; `GET /jobs/{id}/pdf` returns the certificate; `POST /jobs/{id}/decision` records a person's decision | done (jobs are kept in SQLite and survive restarts; CORS allows `http://localhost:3000` unless `CORS_ORIGINS` (comma-separated) says otherwise) |
+| Frontend (Next.js + shadcn dashboard) | dark theme. `/` is an overview: counts that double as filters (all, needs attention, in progress, conforming, awaiting decision), search, sort by priority, and one row per run with its outcome, verdict counts and live progress. `/runs/[id]` is the report (with an Activity tab of the steps), a link to open the CoA, and a decision panel: approve, put on hold or reject, as one of two demo reviewers, with a reason. Upload with the button or by dropping PDFs anywhere; runs come back after a reload |
 
-The plant limits in `backend/docs/plant_specs.json` are **placeholder values**, not real plant requirements.
+The plant limits in `backend/docs/erp_demo.json` are **placeholder values**, not real plant data.
 
 ## How the agent works
 
 The agent is a [LangGraph](https://langchain-ai.github.io/langgraph/) graph in `backend/agent/agent.py`:
 
 ```
-START → load_document → validate_document ─┬→ get_document_data → load_plant_spec ─┬→ compare_specs → render_ui → END
-                                           │                                       └──────────────→ render_ui → END   (no plant spec)
-                                           └───────────────────────────────────────────────────────→ render_ui → END   (not a CoA)
+START → load_document → validate_document ─┬→ get_document_data → load_plant_spec ─┬→ compare_specs → write_summary → render_ui → END
+                                           │                                       └──────────────→ write_summary → render_ui → END   (no plant spec)
+                                           └─────────────────────────────────────────────────────→ render_ui → END                  (not a CoA)
 ```
 
 | Node | Uses a model? | What it does |
@@ -35,7 +34,7 @@ START → load_document → validate_document ─┬→ get_document_data → lo
 | `load_document` | no | Extracts the text of the PDF at `document_path` with `pypdf`. |
 | `validate_document` | yes | Asks the model whether the start of the text is a supplier CoA. If not, or if the PDF has no extractable text, it records a critical `not_a_coa` issue and the graph skips to `render_ui`. |
 | `get_document_data` | yes | Extracts the CoA into a structured schema: header (certificate, product, lot, dates, PO, quantities), one row per test (specification, method, result, unit, supplier status) and the conclusion. The prompt asks for verbatim values and `null` for anything not stated. |
-| `load_plant_spec` | no | Looks up the CoA's `product_code` in `docs/plant_specs.json`. If there is no entry, it records a `missing_plant_spec` issue and the graph ends without calling the model. |
+| `load_plant_spec` | no | Looks up the CoA's `product_code` in the ERP's material master (`docs/erp_demo.json`). If there is no entry, it records a `missing_plant_spec` issue and the graph ends without calling the model. |
 | `compare_specs` | yes | Sends the plant requirements and the CoA results (`test`, `result`, `unit` only, so the supplier's own limits and pass/fail can't bias the judgement) to the model with a dedicated prompt. It returns one verdict per plant test: `pass`, `fail` or `review`. |
 | `render_ui` | yes | Last node. Sends the header, the per-test verdicts and the issues to the model with a prompt that lists the available components (Stack, Grid, Card, Separator, Heading, Text, Badge, Alert, Table) and how to lay out the page. The reply is a [json-render](https://github.com/vercel-labs/json-render) spec stored in `ui_spec`. Invalid JSON is retried once, then replaced by an error Alert. For a document that is not a CoA it skips the model and returns a fixed error Alert. |
 
@@ -64,7 +63,7 @@ test missing from the CoA is `fail` ("not reported").
 | `supplier_materials` | CoA header fields |
 | `spec_values` | test name → the supplier's printed specification |
 | `tests` | structured CoA rows (test, result, unit, specification, method, status) |
-| `plant_spec` | plant requirements for the CoA's product code |
+| `plant_spec` | the ERP's material record for the CoA's product code: plant requirements, approved suppliers, minimum shelf life |
 | `test_checks` | one verdict per plant test, with the supplier result and plant requirement |
 | `issues` | non-passing checks and missing-spec problems (see `schema.Issue`) |
 | `ui_spec` | json-render spec of the report page |
@@ -127,14 +126,15 @@ docs/images/        screenshots used in this README
 backend/
   agent/            LangGraph graph (agent.py), prompts (prompts.py) and state (state.py)
   schema/           Pydantic models: CoA extraction, check verdicts, issues (schema.py)
-  docs/             sample CoAs and the plant specification
+  erp.py            the demo ERP: the material master, read from docs/erp_demo.json
+  docs/             sample CoAs and the demo ERP data
     sample_coa_citric_acid.pdf    conforming CoA (should produce no issues)
     sample_coa_defective.pdf      CoA with five seeded defects
-    plant_specs.json              plant requirements per product code
+    erp_demo.json                 materials with their plant requirements
   scripts/eval_compare.py         end-to-end check against the real model
   tests/                          unit tests (mocked model)
   main.py                         FastAPI app: /health, POST /jobs, GET /jobs and GET /jobs/{id}, plus the job queue and its workers
-  jobs.py                         the jobs table (SQLite) and the uploaded PDFs of unfinished jobs; data lives in backend/data/ (gitignored)
+  jobs.py                         the jobs table (SQLite, with the decisions) and the uploaded PDFs; data lives in backend/data/ (gitignored)
 frontend/           Next.js + shadcn dashboard, dark only (tokens in app/globals.css, contrast checked by lib/contrast.test.ts)
   app/page.tsx                     the overview; app/runs/[id]/page.tsx is the report page
   components/upload-button.tsx     picks one or more PDFs and sends them to the API
@@ -142,19 +142,20 @@ frontend/           Next.js + shadcn dashboard, dark only (tokens in app/globals
   components/overview.tsx          filter tiles, search and sort, the list of rows, empty / offline states, j / k keys
   components/run-row.tsx           one row: status, product and lot, verdict counts or progress, time
   components/run-page.tsx          the report page: header, previous / next run, Report and Activity tabs
+  components/decision-panel.tsx    approve / hold / reject a finished run, as one of the demo reviewers, with a reason
   components/page-dropzone.tsx     drop PDFs anywhere; components/live-announcer.tsx tells screen readers when a run ends
   lib/runs.ts                      filter, search, priority sort and tallies of the runs
   components/report-renderer.tsx   json-render catalog + registry (shadcn components)
 ```
 
-### Plant specification format
+### The demo ERP (`docs/erp_demo.json`)
 
-`docs/plant_specs.json` maps product codes to requirements. Test names must match the CoA's names exactly.
+`erp.py` reads this file; connecting a real ERP means rewriting its one function (`get_material`).
+
+`materials` maps product codes to the plant's requirements. Test names must match the CoA's names exactly.
 
 - numeric test: `{"test": "Water (Karl Fischer)", "type": "numeric", "max": 0.4, "unit": "%"}` (`min` and/or `max`)
 - qualitative test: `{"test": "Appearance", "type": "qualitative", "accepted": ["conforms", "complies"], "requirement": "..."}`
-
-`approved_suppliers` and `min_remaining_shelf_life_days` are in the file but nothing reads them yet.
 
 ## Running it
 
@@ -213,12 +214,14 @@ A job looks like this:
 | `error` | why the job failed, when `status` is `error` |
 | `started_at` | when a worker took the job, in milliseconds since the epoch |
 | `finished_at` | when the job ended (done or error), in milliseconds since the epoch |
+| `decision`, `decided_by`, `decided_at`, `reason` | a person's decision on the finished job (see below); all `null` until someone decides |
+| `has_pdf` | whether the uploaded certificate is still stored, so `GET /jobs/{id}/pdf` has it (jobs from before the PDFs were kept do not) |
 | `result` | what the job list shows without the report, once the job is done: `outcome` (Conforming, Needs review, Non-conforming or Not a CoA), `counts` of pass / fail / review, `product`, `lot`, `supplier`. Written by `write_summary`, or by `render_ui` for a document that is not a CoA |
 
 How the queue works:
 
 - `MAX_CONCURRENT_RUNS` (default 2) worker threads take job ids from an in-memory queue. The jobs themselves are rows in
-  `backend/data/jobs.db`, and the PDF of an unfinished job is kept in `backend/data/uploads/` (set `JOBS_DIR` to move both).
+  `backend/data/jobs.db`, and the uploaded PDFs are kept in `backend/data/uploads/` (set `JOBS_DIR` to move both): the certificate is the record a decision is about.
 - The agent is compiled with a SQLite checkpointer (`backend/data/checkpoints.db`) and run with the job id as its
   `thread_id`, so its state is saved after every node.
 - When the API starts, jobs that were running (the process died) go back to the queue. A job whose run had passed some
@@ -234,6 +237,15 @@ so they do not appear. `get_stream_writer()` only works inside a graph run, so t
 curl -F "file=@docs/sample_coa_defective.pdf" localhost:8000/jobs   # prints the job, including its id
 curl localhost:8000/jobs/<id>
 ```
+
+### Decisions
+
+The agent only prepares the report; a person decides. `POST /jobs/{id}/decision` takes JSON
+`{"decision": "approved" | "rejected" | "on_hold", "by": "...", "reason": "..."}` and answers with the job.
+
+- A `reason` is required to reject or hold, and to approve a lot the agent did not find conforming (an override).
+- `approved` and `rejected` are final (`409` afterwards); a lot `on_hold` can be decided again, and the new decision replaces the hold.
+- Only a finished job can be decided (`409` before), and `by` is whatever the caller says: the demo has no login, no e-signature and no audit trail.
 
 Frontend:
 

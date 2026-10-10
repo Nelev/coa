@@ -1,6 +1,6 @@
-import { CircleCheck, CircleX, Clock, FileText, FileX, Loader2, TriangleAlert } from "lucide-react";
+import { CircleCheck, CirclePause, CircleX, Clock, FileText, FileX, Loader2, ShieldCheck, ShieldX, TriangleAlert } from "lucide-react";
 
-import type { Run } from "@/components/report-context";
+import type { Decision, Run } from "@/components/report-context";
 import { Badge } from "@/components/ui/badge";
 
 type Chip = { label: string; variant: "success" | "warning" | "destructive" | "info" | "secondary"; icon: React.ReactNode };
@@ -30,12 +30,28 @@ function chipOf(run: Run): Chip {
   }
 }
 
-export function StatusChip({ run }: { run: Run }) {
-  const { label, variant, icon } = chipOf(run);
+function ChipBadge({ chip: { label, variant, icon }, title }: { chip: Chip; title?: string }) {
   return (
-    <Badge variant={variant} className="h-6 gap-1.5 px-2.5 text-xs">
+    <Badge variant={variant} title={title} className="h-6 gap-1.5 px-2.5 text-xs">
       {icon}
       {label}
     </Badge>
   );
+}
+
+export function StatusChip({ run }: { run: Run }) {
+  return <ChipBadge chip={chipOf(run)} />;
+}
+
+const DECISIONS: Record<Decision, Chip> = {
+  approved: { label: "Approved", variant: "success", icon: <ShieldCheck /> },
+  rejected: { label: "Rejected", variant: "destructive", icon: <ShieldX /> },
+  on_hold: { label: "On hold", variant: "warning", icon: <CirclePause /> },
+};
+
+// what a person decided about the lot; nothing while nobody has
+export function DecisionChip({ run }: { run: Run }) {
+  if (!run.decision) return null;
+  const { label } = DECISIONS[run.decision];
+  return <ChipBadge chip={DECISIONS[run.decision]} title={run.decidedBy ? `${label} by ${run.decidedBy}` : label} />;
 }

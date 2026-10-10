@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 
+import { NavAuth } from "@/components/nav-auth";
 import { useReport } from "@/components/report-context";
 import { UploadButton } from "@/components/upload-button";
 
@@ -19,8 +20,11 @@ export function AppHeader() {
             {running} {running === 1 ? "analysis" : "analyses"} running
           </span>
         )}
-        <div className="ml-auto w-40">
-          <UploadButton />
+        <div className="ml-auto flex items-center gap-3">
+          <div className="w-40">
+            <UploadButton />
+          </div>
+          <NavAuth />
         </div>
       </div>
     </header>

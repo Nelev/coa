@@ -16,3 +16,10 @@ export function relativeTime(timestamp: number, now: number) {
   const days = Math.round(hours / 24);
   return days <= 7 ? `${days} d ago` : new Date(timestamp).toLocaleDateString();
 }
+
+const MOMENT = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" });
+
+// Oct 9, 2026, 1:43:52 PM
+export function formatMoment(time: number) {
+  return MOMENT.format(time);
+}

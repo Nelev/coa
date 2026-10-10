@@ -1,4 +1,4 @@
-import { CircleCheck, Layers, Loader2, TriangleAlert } from "lucide-react";
+import { CircleCheck, ClipboardCheck, Layers, Loader2, TriangleAlert } from "lucide-react";
 import type { Filter, Tally } from "@/lib/runs";
 import { cn } from "@/lib/utils";
 
@@ -32,13 +32,21 @@ function tiles(tally: Tally): Tile[] {
       icon: <CircleCheck />,
       tone: tally.conforming ? "text-success" : "text-subtle-foreground",
     },
+    {
+      filter: "decision",
+      label: "Awaiting decision",
+      count: tally.awaiting,
+      detail: tally.awaiting ? "for QA to approve or reject" : "nothing waiting",
+      icon: <ClipboardCheck />,
+      tone: tally.awaiting ? "text-primary" : "text-subtle-foreground",
+    },
   ];
 }
 
 // the counts double as the filters of the list: pressing one shows those runs, pressing it again shows all
 export function FilterTiles({ tally, filter, onChange }: { tally: Tally; filter: Filter; onChange: (filter: Filter) => void }) {
   return (
-    <fieldset className="min-w-0 grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <fieldset className="min-w-0 grid grid-cols-2 gap-3 lg:grid-cols-5">
       <legend className="sr-only">Filter runs</legend>
       {tiles(tally).map((tile) => {
         const pressed = filter === tile.filter;
@@ -51,6 +59,7 @@ export function FilterTiles({ tally, filter, onChange }: { tally: Tally; filter:
             className={cn(
               "flex flex-col gap-1 rounded-xl bg-card p-4 text-left ring-1 ring-foreground/10 outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring",
               pressed && "bg-muted ring-2 ring-primary",
+              "last:odd:col-span-2 lg:last:col-span-1", // an odd tile out fills the last row on two columns
             )}
           >
             <span className={cn("flex items-center gap-2 text-xs font-medium [&_svg]:size-4", tile.tone)}>

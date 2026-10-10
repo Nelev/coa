@@ -11,6 +11,7 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from pypdf import PdfReader
 
+import erp
 from schema.schema import CoAData, ComparisonResult, DocumentCheck, Issue, TestCheck
 
 from .prompts import COMPARE_PROMPT, EXTRACTION_PROMPT, RENDER_UI_PROMPT, VALIDATE_PROMPT
@@ -30,7 +31,6 @@ FALLBACK_UI_SPEC = _alert_spec("The report could not be generated", "The model d
 VALIDATION_CHARS = 6000  # the start of a document is enough to tell what kind it is
 
 DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
-PLANT_SPECS_PATH = DOCS_DIR / "plant_specs.json"
 
 # check verdict -> (issue kind, issue severity); a pass raises no issue
 VERDICT_ISSUE = {"fail": ("non_conforming", "critical"), "review": ("needs_review", "warning")}
@@ -91,16 +91,11 @@ def get_document_data(state: AgentState) -> dict:
     }
 
 
-@lru_cache
-def _load_plant_specs(path: Path) -> dict:
-    return json.loads(path.read_text())["materials"]
-
-
 def load_plant_spec(state: AgentState) -> dict:
     """Select the plant requirements for the CoA's product code."""
     _status("Finding the plant specification")
     product_code = state["supplier_materials"].get("product_code")
-    material = _load_plant_specs(PLANT_SPECS_PATH).get(product_code)
+    material = erp.get_material(product_code)
     if material is None:
         issue = Issue(
             kind="missing_plant_spec", severity="critical", message=f"No plant specification found for product code {product_code!r}."

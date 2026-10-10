@@ -3,7 +3,7 @@ import Link from "next/link";
 
 import { preloadReport, type Run } from "@/components/report-context";
 import { RunProgress } from "@/components/run-progress";
-import { StatusChip } from "@/components/status-chip";
+import { DecisionChip, StatusChip } from "@/components/status-chip";
 import { relativeTime } from "@/lib/format";
 import { isActive, totalTests } from "@/lib/runs";
 import { cn } from "@/lib/utils";
@@ -44,8 +44,9 @@ export function RunRow({ run, now }: { run: Run; now: number }) {
         <p className="truncate text-sm font-medium">{run.filename}</p>
         <p className="truncate text-xs text-subtle-foreground">{describe(run) || (run.state === "done" ? "Product not stated" : " ")}</p>
       </div>
-      <div className="min-w-0">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
         <Verdict run={run} />
+        <DecisionChip run={run} />
       </div>
       <p className="text-xs text-subtle-foreground md:text-right">
         {run.finishedAt || run.startedAt ? relativeTime(run.finishedAt || run.startedAt, now) : ""}

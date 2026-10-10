@@ -21,9 +21,16 @@ CREATE TABLE IF NOT EXISTS jobs (
 )
 """
 # columns added after the first version: an existing database gets them when it is opened
-ADDED_COLUMNS = {"result": "TEXT", "finished_at": "INTEGER"}
+ADDED_COLUMNS = {
+    "result": "TEXT",
+    "finished_at": "INTEGER",
+    "decision": "TEXT",
+    "decided_by": "TEXT",
+    "decided_at": "INTEGER",
+    "reason": "TEXT",
+}
 # what a listing returns: everything but the (large) spec
-SUMMARY = "id, filename, status, statuses, error, started_at, finished_at, result"
+SUMMARY = "id, filename, status, statuses, error, started_at, " + ", ".join(ADDED_COLUMNS)
 
 
 def _now() -> int:
@@ -41,9 +48,10 @@ def _job(row: sqlite3.Row) -> dict:
 
 
 class Jobs:
-    """The analysis jobs, kept in SQLite under `directory` along with the uploaded PDFs of the jobs that have not finished.
+    """The analysis jobs, kept in SQLite under `directory` along with the uploaded PDFs.
 
-    A job is queued, running, done or error. The table is the source of truth: the in-memory queue in main.py is rebuilt from it.
+    A job is queued, running, done or error; once done it can also carry a person's decision. The table is the source of
+    truth: the in-memory queue in main.py is rebuilt from it.
     """
 
     def __init__(self, directory: Path):
@@ -74,12 +82,19 @@ class Jobs:
         self._execute("INSERT INTO jobs (id, filename, status) VALUES (?, ?, 'queued')", (job_id, filename))
         return job_id
 
-    def get(self, job_id: str) -> dict | None:
-        rows = self._execute(f"SELECT {SUMMARY}, ui_spec FROM jobs WHERE id = ?", (job_id,))
-        return _job(rows[0]) if rows else None
+    def _with_pdf(self, row: sqlite3.Row) -> dict:
+        job = _job(row)
+        job["has_pdf"] = self.pdf_path(job["id"]).exists()  # jobs from before the PDFs were kept have none
+        return job
+
+    def get(self, job_id: str, with_spec: bool = True) -> dict | None:
+        """One job, with its report unless `with_spec` is False (the report is the large part)."""
+        columns = f"{SUMMARY}, ui_spec" if with_spec else SUMMARY
+        rows = self._execute(f"SELECT {columns} FROM jobs WHERE id = ?", (job_id,))
+        return self._with_pdf(rows[0]) if rows else None
 
     def all(self) -> list[dict]:
-        return [_job(row) for row in self._execute(f"SELECT {SUMMARY} FROM jobs ORDER BY rowid")]
+        return [self._with_pdf(row) for row in self._execute(f"SELECT {SUMMARY} FROM jobs ORDER BY rowid")]
 
     def start(self, job_id: str, keep_statuses: bool = False) -> None:
         """Mark the job running. A run that starts over drops the statuses of its earlier attempt; one that resumes keeps them."""
@@ -92,6 +107,14 @@ class Jobs:
     def finish(self, job_id: str, ui_spec: dict, result: dict | None) -> None:
         sql = "UPDATE jobs SET status = 'done', ui_spec = ?, result = ?, finished_at = ? WHERE id = ?"
         self._execute(sql, (json.dumps(ui_spec), None if result is None else json.dumps(result), _now(), job_id))
+
+    def decide(self, job_id: str, decision: str, by: str, reason: str) -> bool:
+        """Record a person's decision on a finished job. False if the job is not done or already has a final decision."""
+        sql = (
+            "UPDATE jobs SET decision = ?, decided_by = ?, decided_at = ?, reason = ? "
+            "WHERE id = ? AND status = 'done' AND (decision IS NULL OR decision = 'on_hold') RETURNING id"
+        )
+        return bool(self._execute(sql, (decision, by, _now(), reason, job_id)))  # one statement: two people cannot both win
 
     def fail(self, job_id: str, message: str) -> None:
         self._execute("UPDATE jobs SET status = 'error', error = ?, finished_at = ? WHERE id = ?", (message, _now(), job_id))

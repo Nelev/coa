@@ -8,6 +8,9 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 const POLL_MS = 1000;
 
+// a person's decision on a finished analysis; approved and rejected are final, a lot on hold can be decided again
+export type Decision = "approved" | "rejected" | "on_hold";
+
 export type Outcome = "Conforming" | "Needs review" | "Non-conforming" | "Not a CoA";
 
 // what the list shows of a finished analysis, without the report
@@ -23,6 +26,7 @@ export type RunResult = {
 // queued: waiting on the server for a free worker; error: `message` says why, `statuses` how far the agent got.
 // startedAt / finishedAt: when the server started and ended the run, as Date.now() values (0 while that has not happened).
 // local: the run is not on the server (an upload that failed), so there is no report page for it.
+// decision, decidedBy, decidedAt, reason: what a person decided about the lot (decidedAt as a Date.now() value); hasPdf: the certificate can be opened.
 export type Run = {
   id: string;
   filename: string;
@@ -33,6 +37,11 @@ export type Run = {
   result?: RunResult;
   message?: string;
   local?: boolean;
+  decision?: Decision;
+  decidedBy?: string;
+  decidedAt?: number;
+  reason?: string;
+  hasPdf?: boolean;
 };
 
 // a job as GET /jobs returns it; the report (ui_spec) is only in GET /jobs/{id}
@@ -45,6 +54,11 @@ export type Job = {
   started_at: number | null;
   finished_at: number | null;
   result: RunResult | null;
+  decision: Decision | null;
+  decided_by: string | null;
+  decided_at: number | null;
+  reason: string | null;
+  has_pdf: boolean;
   ui_spec?: unknown;
 };
 
@@ -61,35 +75,67 @@ function toRun(job: Job, previous?: Run): Run {
     statuses: job.statuses,
     result: job.result ?? undefined,
     message: job.error ?? undefined,
+    decision: job.decision ?? undefined,
+    decidedBy: job.decided_by ?? undefined,
+    decidedAt: job.decided_at ?? undefined,
+    reason: job.reason ?? undefined,
+    hasPdf: job.has_pdf,
   };
   const unchanged =
     previous?.state === run.state &&
     previous.statuses.length === run.statuses.length &&
     previous.message === run.message &&
     previous.startedAt === run.startedAt &&
-    previous.finishedAt === run.finishedAt;
+    previous.finishedAt === run.finishedAt &&
+    previous.decision === run.decision &&
+    previous.decidedAt === run.decidedAt &&
+    previous.hasPdf === run.hasPdf;
   return unchanged ? previous : run;
 }
 
+// an error says what the server said (its `detail`), or at least its status
 async function request(path: string, init?: RequestInit): Promise<Response> {
-  const response = await fetch(`${API_URL}${path}`, init);
-  if (!response.ok) throw new Error(`the server answered ${response.status}`);
+  const response = await fetch(`${API_URL}${path}`, init).catch(() => {
+    throw new Error("the server cannot be reached");
+  });
+  if (!response.ok) {
+    const detail = await response.json().then(
+      (body) => body.detail,
+      () => undefined,
+    );
+    throw new Error(typeof detail === "string" ? detail : `the server answered ${response.status}`);
+  }
   return response;
 }
+
+// where the uploaded certificate of a run can be opened
+export const pdfUrl = (id: string) => `${API_URL}/jobs/${id}/pdf`;
 
 function fetchJobs(): Promise<Job[]> {
   return request("/jobs").then((response) => response.json());
 }
 
-// the reports seen so far: one of a finished run never changes, so opening it again (previous / next, back to the list) costs nothing
-const reports = new Map<string, unknown>();
+// The requests for reports, kept by run: callers that ask while one is under way share it, and the report of a finished run never
+// changes, so opening it again (previous / next, back to the list) costs nothing. A request that failed, or that found no report
+// yet, is forgotten so that the next one asks again.
+const reports = new Map<string, Promise<unknown>>();
 
 // the report of a finished run; null while the job has none yet
-export async function fetchReport(id: string): Promise<unknown> {
-  if (reports.has(id)) return reports.get(id);
-  const job = (await request(`/jobs/${id}`).then((response) => response.json())) as Job;
-  if (job.ui_spec != null) reports.set(id, job.ui_spec);
-  return job.ui_spec;
+export function fetchReport(id: string): Promise<unknown> {
+  const known = reports.get(id);
+  if (known) return known;
+  const report = request(`/jobs/${id}`)
+    .then((response) => response.json() as Promise<Job>)
+    .then((job) => {
+      if (job.ui_spec == null) reports.delete(id);
+      return job.ui_spec;
+    })
+    .catch((error) => {
+      reports.delete(id);
+      throw error;
+    });
+  reports.set(id, report);
+  return report;
 }
 
 // the server's jobs replace what we know of them; runs the server does not have (an upload that failed) stay
@@ -117,6 +163,8 @@ const ReportContext = createContext<{
   notice: string | null;
   dismissNotice: () => void;
   upload: (files: File[]) => void;
+  // records a person's decision on a finished run; rejects with the server's reason when it refuses (a reason is missing, the lot was decided already)
+  decide: (id: string, decision: Decision, by: string, reason: string) => Promise<void>;
 } | null>(null);
 
 // Holds the runs shared by every page. The server queues and runs the jobs; this polls it for their progress while any is
@@ -187,7 +235,15 @@ export function ReportProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  return <ReportContext value={{ runs, running, loaded, offline, notice, dismissNotice: () => setNotice(null), upload }}>{children}</ReportContext>;
+  async function decide(id: string, decision: Decision, by: string, reason: string) {
+    const init = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision, by, reason }) };
+    const job = (await request(`/jobs/${id}/decision`, init).then((response) => response.json())) as Job;
+    setRuns((all) => all.map((run) => (run.id === id ? toRun(job, run) : run)));
+  }
+
+  return (
+    <ReportContext value={{ runs, running, loaded, offline, notice, dismissNotice: () => setNotice(null), upload, decide }}>{children}</ReportContext>
+  );
 }
 
 export function useReport() {
