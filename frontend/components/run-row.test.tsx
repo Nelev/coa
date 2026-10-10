@@ -42,6 +42,11 @@ describe("RunRow", () => {
     expect(html).toContain("2 min ago");
   });
 
+  it("shows how long a finished run took, and nothing while it is still running", () => {
+    expect(row({ result: result(), startedAt: NOW - 125_000, finishedAt: NOW - 120_000 })).toContain("5.0s");
+    expect(row({ state: "loading", startedAt: NOW - 3_000, finishedAt: 0 })).not.toContain("3.0s");
+  });
+
   it("shows the step and the time while it is running", () => {
     const html = row({ state: "loading", startedAt: Date.now(), statuses: ["Reading the PDF", "Checking it is a CoA"] });
     expect(html).toContain("Step 2");
