@@ -22,6 +22,12 @@ def sent(monkeypatch):
         def __exit__(self, *_):
             pass
 
+        def starttls(self):
+            messages.append("starttls")
+
+        def login(self, user, password):
+            messages.append(f"login {user}")
+
         def send_message(self, msg):
             messages.append(msg)
 
@@ -44,7 +50,7 @@ def test_the_failure_is_mailed_with_the_last_step(sent, monkeypatch):
 
     send_failure_mail(JOB, "model unavailable")
 
-    _, msg = sent
+    msg = sent[-1]
     assert msg["To"] == "quality@example.com" and msg["Subject"] == "CoA job failed: lot.pdf"
     assert "model unavailable" in msg.get_content() and "Last step reached: Reading the PDF" in msg.get_content()
 
@@ -55,4 +61,32 @@ def test_no_last_step_note_when_the_job_never_started(sent, monkeypatch):
 
     send_failure_mail({**JOB, "statuses": []}, "boom")
 
-    assert "Last step" not in sent[1].get_content()
+    assert "Last step" not in sent[-1].get_content()
+
+
+def test_the_sender_is_smtp_from_when_set_else_the_login(sent, monkeypatch):
+    monkeypatch.setenv("SMTP_HOST", "localhost")
+    monkeypatch.setenv("NOTIFY_EMAIL", "quality@example.com")
+    monkeypatch.delenv("SMTP_FROM", raising=False)
+
+    send_failure_mail(JOB, "boom")  # no login either: the local default
+    assert sent[-1]["From"] == "coa-agent@localhost"
+
+    monkeypatch.setenv("SMTP_USER", "resend")
+    send_failure_mail(JOB, "boom")
+    assert sent[-1]["From"] == "resend"
+
+    monkeypatch.setenv("SMTP_FROM", "alerts@example.com")
+    send_failure_mail(JOB, "boom")
+    assert sent[-1]["From"] == "alerts@example.com"
+
+
+def test_a_login_means_starttls_then_login(sent, monkeypatch):
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("NOTIFY_EMAIL", "quality@example.com")
+    monkeypatch.setenv("SMTP_USER", "resend")
+    monkeypatch.setenv("SMTP_PASSWORD", "secret")
+
+    send_failure_mail(JOB, "boom")
+
+    assert sent[:3] == ["connect smtp.example.com:587", "starttls", "login resend"]

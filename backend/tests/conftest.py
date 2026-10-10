@@ -60,3 +60,10 @@ def stream_writer_outside_a_graph(monkeypatch):
 def signed_in(monkeypatch):
     """Lets the API tests act as a signed-in person; test_auth.py checks the sign-in itself."""
     monkeypatch.setitem(main.app.dependency_overrides, auth.require_user, lambda: {"sub": "user_test"})
+
+
+@pytest.fixture(autouse=True)
+def no_real_mail(monkeypatch):
+    """agent.py loads backend/.env, which may hold real SMTP settings: a test that fails a job must not mail anyone."""
+    for name in ("SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM", "NOTIFY_EMAIL"):
+        monkeypatch.delenv(name, raising=False)

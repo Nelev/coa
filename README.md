@@ -185,8 +185,9 @@ Each job records who uploaded it (`owner`, their sign-in id). When a job fails, 
 ```
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587                  # default 587; STARTTLS is used when SMTP_USER is set
-SMTP_USER=you@gmail.com        # also the "From" address
+SMTP_USER=you@gmail.com        # the login; also the "From" address unless SMTP_FROM is set
 SMTP_PASSWORD=...              # Gmail: an App Password (needs 2-Step Verification), not your account password
+SMTP_FROM=alerts@example.com   # optional: the sender, for providers whose login is not an address (Resend: SMTP_USER=resend)
 NOTIFY_EMAIL=you@example.com   # who gets the failure mails
 ```
 
