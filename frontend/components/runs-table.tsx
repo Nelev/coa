@@ -55,7 +55,7 @@ function SortHeader({
 }
 
 // The runs as a real table: column headers a screen reader announces, headers that stay in view and sort on a press. On a phone the
-// "Result" and "Updated" columns go and their content moves under the file name (see RunRow).
+// "Result", "Duration" and "Updated" columns go and their content moves under the file name (see RunRow).
 export function RunsTable({
   runs,
   now,
@@ -86,6 +86,9 @@ export function RunsTable({
             <SortHeader column="name" label="File" sort={sort} onSort={onSort} className="md:w-[34%]" />
             <th scope="col" className={cn(HEAD, "hidden md:table-cell")}>
               Result
+            </th>
+            <th scope="col" className={cn(HEAD, "hidden w-24 text-right md:table-cell")}>
+              Duration
             </th>
             <SortHeader column="when" label="Updated" sort={sort} onSort={onSort} right className="hidden w-36 md:table-cell" />
           </tr>
