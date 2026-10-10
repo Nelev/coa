@@ -9,7 +9,6 @@ import { parseTheme, THEME_COOKIE, type Theme } from "@/lib/theme";
 const OPTIONS: { value: Theme; label: string; icon: React.ReactNode }[] = [
   { value: "light", label: "Light", icon: <Sun /> },
   { value: "dark", label: "Dark", icon: <Moon /> },
-  { value: "system", label: "System", icon: <Monitor /> },
 ];
 
 function apply(theme: Theme) {

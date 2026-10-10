@@ -1,9 +1,7 @@
 "use client";
 
 import { LogOut } from "lucide-react";
-import { startTransition } from "react";
 
-import { signOutAction } from "@/app/auth/actions";
 import { ThemeMenu } from "@/components/theme-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -28,6 +26,9 @@ const initials = (name: string) =>
     .map((part) => part[0]?.toUpperCase())
     .join("");
 
+// A full navigation, not a client-side one; the response is the redirect to WorkOS.
+const signOut = () => window.location.assign("/auth/sign-out");
+
 // Who is signed in, the theme, and sign out: one menu instead of a bare "Sign out" in the header.
 export function UserMenu({ account, theme }: { account: Account; theme: Theme }) {
   return (
@@ -48,7 +49,7 @@ export function UserMenu({ account, theme }: { account: Account; theme: Theme })
         <DropdownMenuSeparator />
         <ThemeMenu initial={theme} />
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => startTransition(() => signOutAction())}>
+        <DropdownMenuItem onClick={signOut}>
           <LogOut />
           Sign out
         </DropdownMenuItem>
