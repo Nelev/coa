@@ -50,7 +50,7 @@ class FakeAgent:
 
 
 @pytest.fixture
-def start_app(tmp_path, monkeypatch):
+def start_app(tmp_path, monkeypatch, signed_in):
     """Starts the app (its lifespan) with the jobs in tmp_path; the app is stopped after the test."""
     monkeypatch.setenv("JOBS_DIR", str(tmp_path))
     clients = []

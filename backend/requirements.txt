@@ -6,3 +6,4 @@ langchain-openai
 pypdf
 python-dotenv
 python-multipart
+PyJWT[crypto]>=2.15

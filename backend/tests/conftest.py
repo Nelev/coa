@@ -3,6 +3,8 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel
 
+import auth
+import main
 from agent import agent
 from schema import schema
 
@@ -52,3 +54,9 @@ def stream_writer_outside_a_graph(monkeypatch):
             return lambda _: None
 
     monkeypatch.setattr(agent, "get_stream_writer", get_stream_writer)
+
+
+@pytest.fixture
+def signed_in(monkeypatch):
+    """Lets the API tests act as a signed-in person; test_auth.py checks the sign-in itself."""
+    monkeypatch.setitem(main.app.dependency_overrides, auth.require_user, lambda: {"sub": "user_test"})
