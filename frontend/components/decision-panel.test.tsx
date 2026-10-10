@@ -4,25 +4,26 @@ import { DecisionPanel } from "@/components/decision-panel";
 import type { Run } from "@/components/report-context";
 
 vi.mock("@/components/report-context", () => ({ useReport: () => ({ decide: vi.fn() }) }));
+vi.mock("@/components/toaster", () => ({ useToast: () => ({ toast: vi.fn(), dismiss: vi.fn() }) }));
 
 const result = { outcome: "Conforming" as const, counts: { pass: 3, fail: 0, review: 0 }, product: null, lot: null, supplier: null };
 const base: Run = { id: "abc", filename: "coa.pdf", state: "done", startedAt: 1, finishedAt: 2, statuses: [], result };
 const panel = (run: Partial<Run>) => renderToStaticMarkup(<DecisionPanel run={{ ...base, ...run }} />);
 
 describe("DecisionPanel", () => {
-  it("offers the three decisions, the ones that need a reason disabled until there is one", () => {
+  it("offers the three decisions, none of them greyed out: a missing reason is said when one is pressed, not by a dead button", () => {
     const html = panel({});
     expect(html).toContain("Approve");
     expect(html).toContain("Put on hold");
     expect(html).toContain("Reject");
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Put on hold/); // a reason is missing
-    expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Approve</); // a conforming lot needs none to be approved
+    expect(html).not.toContain('disabled=""');
+    expect(html).toContain("A reason is required to reject or hold a lot.");
   });
 
   it("calls approving a lot that does not conform an override and asks for a reason", () => {
     const html = panel({ result: { ...result, outcome: "Non-conforming" } });
     expect(html).toContain("Approve anyway");
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Approve anyway/);
+    expect(html).not.toContain('disabled=""');
     expect(html).toContain("including approving it");
   });
 

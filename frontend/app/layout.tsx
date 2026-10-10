@@ -1,26 +1,28 @@
 import "./globals.css";
+import type { Metadata } from "next";
 import { Geist } from "next/font/google";
-import { AppHeader } from "@/components/app-header";
-import { LiveAnnouncer } from "@/components/live-announcer";
-import { PageDropzone } from "@/components/page-dropzone";
-import { ReportProvider } from "@/components/report-context";
+import { cookies } from "next/headers";
+import { parseTheme, THEME_COOKIE, THEME_SCRIPT } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
 const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
 
-export const metadata = { title: "COA Agent" };
+export const metadata: Metadata = { title: { default: "COA Agent", template: "%s · COA Agent" } };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const theme = parseTheme((await cookies()).get(THEME_COOKIE)?.value);
   return (
-    <html lang="en" className={cn("dark font-sans", geist.variable)}>
+    // suppressHydrationWarning: for "system" the script below sets the class before React sees the page
+    <html lang="en" suppressHydrationWarning className={cn("font-sans", theme === "dark" && "dark", geist.variable)}>
       <body className="flex min-h-svh flex-col">
-        <ReportProvider>
-          <PageDropzone>
-            <AppHeader />
-            <main className="mx-auto w-full max-w-6xl flex-1 p-4 md:p-6">{children}</main>
-            <LiveAnnouncer />
-          </PageDropzone>
-        </ReportProvider>
+        {/* Server HTML carries a real script. On the client React would warn that scripts do not run there, so the type changes there; suppressHydrationWarning covers the difference. */}
+        <script
+          suppressHydrationWarning
+          type={typeof window === "undefined" ? undefined : "application/json"}
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: a constant script, it must run before the first paint
+          dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }}
+        />
+        {children}
       </body>
     </html>
   );

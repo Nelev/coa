@@ -1,16 +1,19 @@
 "use client";
 
-import { ArrowLeft, ChevronLeft, ChevronRight, FileText } from "lucide-react";
+import { ChevronLeft, ChevronRight, FileText } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { DecisionBar } from "@/components/decision-bar";
 import { DecisionPanel } from "@/components/decision-panel";
+import { Problem } from "@/components/problem";
 import { fetchReport, openPdf, type Run, useReport } from "@/components/report-context";
-import { RunProgress } from "@/components/run-progress";
-import { DecisionChip, StatusChip } from "@/components/status-chip";
+import { RunSummary, runTitle } from "@/components/run-summary";
+import { SkeletonRegion } from "@/components/skeleton-region";
 import { Steps } from "@/components/steps";
+import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -23,12 +26,14 @@ const ReportRenderer = dynamic(() => import("@/components/report-renderer").then
 // undefined until the list says what the run is). Once the list says it is not done there is nothing to ask for, and the
 // request is made when it finishes.
 function useReportSpec(id: string, state: Run["state"] | undefined) {
+  const [attempt, setAttempt] = useState(0); // asking again after a failure
   const done = state === "done";
   const wanted = state === undefined || done;
   const [loaded, setLoaded] = useState<{ id: string; spec: unknown }>();
   const [failed, setFailed] = useState(false);
   const have = loaded?.id === id;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `attempt` is only there to ask again after a failure
   useEffect(() => {
     if (have || !wanted) return;
     let current = true;
@@ -39,35 +44,75 @@ function useReportSpec(id: string, state: Run["state"] | undefined) {
     return () => {
       current = false;
     };
-  }, [id, done, wanted, have]);
+  }, [id, done, wanted, have, attempt]);
 
-  return { spec: loaded?.id === id ? loaded.spec : undefined, failed };
+  return { spec: loaded?.id === id ? loaded.spec : undefined, failed, retry: () => setAttempt((n) => n + 1) };
 }
 
-function Report({ run, spec, failed }: { run: Run; spec: unknown; failed: boolean }) {
+// the shape of a report while it loads: the title, the verdict, two cards and a list of findings
+function ReportSkeleton() {
+  return (
+    <SkeletonRegion label="Loading the report…" className="flex max-w-4xl flex-col gap-5">
+      <Skeleton className="h-7 w-2/3" />
+      <Skeleton className="h-16 w-full rounded-xl" />
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Skeleton className="h-32 rounded-xl" />
+        <Skeleton className="h-32 rounded-xl" />
+      </div>
+      <Skeleton className="h-6 w-32" />
+      <Skeleton className="h-20 w-full rounded-xl" />
+      <Skeleton className="h-20 w-full rounded-xl" />
+    </SkeletonRegion>
+  );
+}
+
+function Report({
+  run,
+  spec,
+  failed,
+  retry,
+  showActivity,
+}: {
+  run: Run;
+  spec: unknown;
+  failed: boolean;
+  retry: () => void;
+  showActivity: () => void;
+}) {
   if (isActive(run)) {
     return (
-      <div className="flex max-w-md flex-col gap-3 rounded-xl bg-card p-5 ring-1 ring-foreground/10">
-        <p className="text-sm text-muted-foreground">The report appears here when the analysis finishes.</p>
-        <RunProgress run={run} />
-      </div>
+      <p className="text-sm text-muted-foreground">
+        The report appears here when the analysis finishes. Its progress is above, and every step is in Activity.
+      </p>
     );
   }
   if (run.state === "error") {
     return (
-      <p role="alert" className="rounded-lg bg-destructive/10 px-4 py-3 text-sm text-destructive">
-        {run.filename} could not be analyzed: {run.message}. The steps it reached are in Activity.
-      </p>
+      <Problem
+        action={
+          <Button variant="outline" size="sm" onClick={showActivity}>
+            See the steps
+          </Button>
+        }
+      >
+        {run.filename} could not be analyzed: {run.message}. Nothing else is affected; upload the file again once the cause is fixed.
+      </Problem>
     );
   }
   if (failed) {
     return (
-      <p role="alert" className="rounded-lg bg-destructive/10 px-4 py-3 text-sm text-destructive">
-        The report could not be loaded. Is the backend running?
-      </p>
+      <Problem
+        action={
+          <Button variant="outline" size="sm" onClick={retry}>
+            Try again
+          </Button>
+        }
+      >
+        The report could not be loaded, probably because the server cannot be reached. The analysis itself is saved on the server.
+      </Problem>
     );
   }
-  if (spec === undefined) return <Skeleton className="h-64 w-full" />;
+  if (spec === undefined) return <ReportSkeleton />;
   return <ReportRenderer spec={spec} />;
 }
 
@@ -128,28 +173,55 @@ function OpenPdfButton({ id }: { id: string }) {
 export function RunPage() {
   const { id } = useParams<{ id: string }>();
   const { runs, loaded } = useReport();
-  const [chosen, setChosen] = useState<string>();
   const run = runs.find((r) => r.id === id);
-  const { spec, failed } = useReportSpec(id, run?.state);
+  const { spec, failed, retry } = useReportSpec(id, run?.state);
+  return <RunView run={run} runs={runs} loaded={loaded} spec={spec} failed={failed} retry={retry} />;
+}
 
-  const back = (
-    <Link
-      href="/"
-      className="inline-flex w-fit items-center gap-1.5 rounded-md text-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      <ArrowLeft className="size-4" />
-      All runs
-    </Link>
+// What the page shows, given the run and its report; RunPage fetches them.
+export function RunView({
+  run,
+  runs,
+  loaded,
+  spec,
+  failed,
+  retry,
+}: {
+  run: Run | undefined;
+  runs: Run[];
+  loaded: boolean;
+  spec: unknown;
+  failed: boolean;
+  retry: () => void;
+}) {
+  const [chosen, setChosen] = useState<string>();
+
+  const crumbs = (current: string) => (
+    <Breadcrumb>
+      <BreadcrumbList>
+        <BreadcrumbItem>
+          <BreadcrumbLink render={<Link href="/" />}>Runs</BreadcrumbLink>
+        </BreadcrumbItem>
+        <BreadcrumbSeparator />
+        <BreadcrumbItem className="min-w-0">
+          <BreadcrumbPage className="block max-w-[60vw] truncate">{current}</BreadcrumbPage>
+        </BreadcrumbItem>
+      </BreadcrumbList>
+    </Breadcrumb>
   );
 
   if (!run) {
     return (
       <div className="flex flex-col gap-6">
-        {back}
+        {crumbs("Run")}
         {loaded ? (
           <p className="text-sm text-muted-foreground">There is no run with this address. It may have been removed.</p>
         ) : (
-          <Skeleton className="h-24 w-full" />
+          <SkeletonRegion label="Loading the run…" className="flex flex-col gap-5">
+            <Skeleton className="h-8 w-2/3" />
+            <Skeleton className="h-36 w-full rounded-2xl" />
+            <Skeleton className="h-9 w-48" />
+          </SkeletonRegion>
         )}
       </div>
     );
@@ -157,37 +229,42 @@ export function RunPage() {
 
   // while the analysis runs its steps are what there is to see; the report takes over when it is done, unless the user chose
   const tab = chosen ?? (run.state === "done" ? "report" : "activity");
+  const decidable = run.state === "done";
 
   return (
-    <div className="flex flex-col gap-6">
-      {back}
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="flex min-w-0 flex-col gap-2">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="max-w-full truncate text-xl font-semibold">{run.filename}</h1>
-            <StatusChip run={run} />
-            <DecisionChip run={run} />
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          {run.hasPdf && <OpenPdfButton id={run.id} />}
-          <Neighbours runs={runs} id={run.id} />
-        </div>
-      </div>
+    <div className={decidable ? "flex flex-col gap-6 pb-20 lg:pb-0" : "flex flex-col gap-6"}>
+      {crumbs(runTitle(run))}
+      <RunSummary
+        run={run}
+        actions={
+          <>
+            {run.hasPdf && <OpenPdfButton id={run.id} />}
+            <Neighbours runs={runs} id={run.id} />
+          </>
+        }
+      />
 
-      <Tabs value={tab} onValueChange={(value) => setChosen(String(value))}>
-        <TabsList>
-          <TabsTrigger value="report">Report</TabsTrigger>
-          <TabsTrigger value="activity">Activity</TabsTrigger>
-        </TabsList>
-        <TabsContent value="report" className="flex flex-col gap-6">
-          <Report run={run} spec={spec} failed={failed} />
-          {run.state === "done" && <DecisionPanel run={run} />}
-        </TabsContent>
-        <TabsContent value="activity">
-          <Steps run={run} />
-        </TabsContent>
-      </Tabs>
+      {/* from lg on, the decision is a column that stays in view beside the report; below, it is a bar at the foot of the screen */}
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <Tabs value={tab} onValueChange={(value) => setChosen(String(value))} className="min-w-0">
+          <TabsList>
+            <TabsTrigger value="report">Report</TabsTrigger>
+            <TabsTrigger value="activity">Activity</TabsTrigger>
+          </TabsList>
+          <TabsContent value="report" className="flex flex-col gap-6">
+            <Report run={run} spec={spec} failed={failed} retry={retry} showActivity={() => setChosen("activity")} />
+          </TabsContent>
+          <TabsContent value="activity">
+            <Steps run={run} />
+          </TabsContent>
+        </Tabs>
+        {decidable && (
+          <div className="sticky top-[4.5rem] hidden lg:block">
+            <DecisionPanel run={run} />
+          </div>
+        )}
+      </div>
+      {decidable && <DecisionBar run={run} />}
     </div>
   );
 }

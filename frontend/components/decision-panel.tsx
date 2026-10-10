@@ -1,18 +1,25 @@
 "use client";
 
-import { useId, useState } from "react";
+import dynamic from "next/dynamic";
+import { useId, useRef, useState } from "react";
 
+import { Problem } from "@/components/problem";
 import { type Decision, type Run, useReport } from "@/components/report-context";
+import { runTitle } from "@/components/run-summary";
 import { DecisionChip } from "@/components/status-chip";
+import { useToast } from "@/components/toaster";
 import { Button } from "@/components/ui/button";
+import { decisionToast, missingReason } from "@/lib/decisions";
 import { formatMoment } from "@/lib/format";
 import { isDecided, requiresReason } from "@/lib/runs";
+import { useOnceOpened } from "@/lib/use-once-opened";
+import { usePersistedChoice } from "@/lib/use-persisted-choice";
 
 // the demo has no login: whoever decides says who they are
-const REVIEWERS = ["QA Anna Rossi", "QC Marco Bianchi"];
+const REVIEWERS = ["QA Anna Rossi", "QC Marco Bianchi"] as const;
 
 const FIELD =
-  "w-full rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50 dark:bg-input/30";
+  "w-full rounded-lg border border-field bg-transparent px-2.5 py-1.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:bg-input/30";
 
 const BUTTONS: { decision: Decision; label: string; variant: "default" | "outline" | "destructive" }[] = [
   { decision: "approved", label: "Approve", variant: "default" },
@@ -36,23 +43,34 @@ function Summary({ run }: { run: Run }) {
   );
 }
 
-function DecisionForm({ run }: { run: Run }) {
+// the confirmation (an alert dialog) is loaded the first time a decision needs one
+const DecisionConfirm = dynamic(() => import("@/components/decision-confirm").then((m) => m.DecisionConfirm));
+
+function DecisionForm({ run, onDone }: { run: Run; onDone?: () => void }) {
   const { decide } = useReport();
-  const [by, setBy] = useState(REVIEWERS[0]);
+  const { toast } = useToast();
+  // the same person decides next time (WCAG 3.3.7: do not ask for the same thing twice)
+  const [by, setBy] = usePersistedChoice("reviewer", REVIEWERS);
   const [reason, setReason] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
-  const ids = { reason: useId(), by: useId(), hint: useId() };
+  const [asking, setAsking] = useState<Decision | null>(null); // the decision waiting for its confirmation
+  const [missing, setMissing] = useState<Decision | null>(null); // the decision that was pressed without a reason
+  const asked = useOnceOpened(asking !== null);
+  const reasonField = useRef<HTMLTextAreaElement>(null);
+  const ids = { reason: useId(), by: useId(), hint: useId(), missing: useId() };
 
   const overrides = requiresReason("approved", run); // approving needs a reason only when it overrides the agent
-  const missingReason = !reason.trim();
 
   async function submit(decision: Decision) {
     setPending(true);
     setError(undefined);
     try {
       await decide(run.id, decision, by, reason.trim());
+      toast(decisionToast(decision, runTitle(run), by));
+      setAsking(null);
       setReason("");
+      onDone?.();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "the decision could not be saved");
     } finally {
@@ -60,8 +78,21 @@ function DecisionForm({ run }: { run: Run }) {
     }
   }
 
-  // a button that needs a reason waits for one
-  const blocked = (decision: Decision) => pending || (requiresReason(decision, run) && missingReason);
+  // Nothing is greyed out: a button that does nothing explains nothing. Pressing one without the reason it needs says so, next to the field.
+  function choose(decision: Decision) {
+    setError(undefined);
+    // a decision that cannot be taken back, or overrides the agent (rejecting, holding, approving a lot that does not conform), needs a
+    // reason and is confirmed first; approving a conforming lot is one click
+    const consequential = requiresReason(decision, run);
+    if (consequential && !reason.trim()) {
+      setMissing(decision);
+      reasonField.current?.focus();
+      return;
+    }
+    setMissing(null);
+    if (consequential) setAsking(decision);
+    else void submit(decision);
+  }
 
   return (
     <>
@@ -70,7 +101,12 @@ function DecisionForm({ run }: { run: Run }) {
         <label htmlFor={ids.by} className="text-xs font-medium text-muted-foreground">
           Deciding as
         </label>
-        <select id={ids.by} value={by} onChange={(event) => setBy(event.target.value)} className={`${FIELD} h-8 max-w-xs py-0`}>
+        <select
+          id={ids.by}
+          value={by}
+          onChange={(event) => setBy(REVIEWERS.find((name) => name === event.target.value) ?? REVIEWERS[0])}
+          className={`${FIELD} h-8 max-w-xs py-0 pointer-coarse:h-10`}
+        >
           {REVIEWERS.map((name) => (
             <option key={name}>{name}</option>
           ))}
@@ -81,42 +117,65 @@ function DecisionForm({ run }: { run: Run }) {
           Reason
         </label>
         <textarea
+          ref={reasonField}
           id={ids.reason}
           value={reason}
-          onChange={(event) => setReason(event.target.value)}
+          onChange={(event) => {
+            setReason(event.target.value);
+            setMissing(null);
+          }}
           rows={3}
-          aria-describedby={ids.hint}
+          aria-invalid={missing ? true : undefined}
+          aria-describedby={missing ? `${ids.missing} ${ids.hint}` : ids.hint}
           placeholder="Why this decision"
           className={FIELD}
         />
+        {missing ? (
+          <p id={ids.missing} role="alert" className="text-xs font-medium text-destructive">
+            {missingReason(missing)}
+          </p>
+        ) : null}
         <p id={ids.hint} className="text-xs text-subtle-foreground">
           {overrides
             ? "The agent did not find this lot conforming: every decision, including approving it, needs a reason."
             : "A reason is required to reject or hold a lot."}
         </p>
       </div>
-      {error ? (
-        <p role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </p>
-      ) : null}
+      {error && !asking ? <Problem compact>{error}. Nothing was recorded; you can try again.</Problem> : null}
       <div className="flex flex-wrap gap-2">
         {BUTTONS.map(({ decision, label, variant }) => (
-          <Button key={decision} variant={variant} disabled={blocked(decision)} onClick={() => submit(decision)}>
+          <Button key={decision} variant={variant} disabled={pending} onClick={() => choose(decision)}>
             {decision === "approved" && overrides ? "Approve anyway" : label}
           </Button>
         ))}
       </div>
+      {asked ? (
+        <DecisionConfirm
+          run={run}
+          decision={asking}
+          by={by}
+          reason={reason}
+          pending={pending}
+          error={error}
+          onConfirm={() => asking && submit(asking)}
+          onCancel={() => {
+            setAsking(null);
+            setError(undefined);
+          }}
+        />
+      ) : null}
     </>
   );
 }
 
-// The release decision always stays with a person: the agent only prepares the report.
-export function DecisionPanel({ run }: { run: Run }) {
+// The release decision always stays with a person: the agent only prepares the report. `bare`: inside a sheet that has its own title.
+export function DecisionPanel({ run, bare = false, onDone }: { run: Run; bare?: boolean; onDone?: () => void }) {
+  const body = isDecided(run) ? <Summary run={run} /> : <DecisionForm run={run} onDone={onDone} />;
+  if (bare) return <div className="flex flex-col gap-4">{body}</div>;
   return (
     <section aria-label="Decision" className="flex flex-col gap-4 rounded-xl bg-card p-5 ring-1 ring-foreground/10">
       <h2 className="text-sm font-semibold">Decision</h2>
-      {isDecided(run) ? <Summary run={run} /> : <DecisionForm run={run} />}
+      {body}
     </section>
   );
 }

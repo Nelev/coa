@@ -2,7 +2,33 @@ import type { Decision, Run } from "@/components/report-context";
 
 // What the overview shows and filters by: a run is in progress, needs attention, conforms, or (while it is not done) is none of these yet.
 export type Filter = "all" | "progress" | "attention" | "conforming" | "decision";
-export type Sort = "priority" | "newest";
+export type Sort = "priority" | "newest" | "oldest" | "name" | "name-desc";
+
+const FILTERS: Filter[] = ["all", "attention", "progress", "conforming", "decision"];
+export const SORT_LABELS: Record<Sort, string> = {
+  priority: "Priority",
+  newest: "Newest",
+  oldest: "Oldest",
+  name: "File name A–Z",
+  "name-desc": "File name Z–A",
+};
+const SORTS = Object.keys(SORT_LABELS) as Sort[];
+
+// the filter and the sort live in the address (/?filter=attention&sort=name), which anyone can edit: anything unknown means the default
+export function parseFilter(value: string | null | undefined): Filter {
+  return FILTERS.find((filter) => filter === value) ?? "all";
+}
+
+export function parseSort(value: string | null | undefined): Sort {
+  return SORTS.find((sort) => sort === value) ?? "priority";
+}
+
+// what pressing a column header does: the same column again reverses it; another column starts at its natural order
+export function nextSort(current: Sort, column: "status" | "name" | "when"): Sort {
+  if (column === "status") return "priority";
+  if (column === "name") return current === "name" ? "name-desc" : "name";
+  return current === "newest" ? "oldest" : "newest";
+}
 
 // queued or being analyzed: the run will still change
 export function isActive(run: Run): boolean {
@@ -51,9 +77,22 @@ function urgency(run: Run): number {
 // what a person has decided goes after everything that is still open
 const byPriority = (a: Run, b: Run) => Number(isDecided(a)) - Number(isDecided(b)) || urgency(a) - urgency(b);
 
+const byName = (a: Run, b: Run) => a.filename.localeCompare(b.filename, undefined, { numeric: true, sensitivity: "base" });
+
 export function sortRuns(runs: Run[], sort: Sort): Run[] {
   const newest = [...runs].reverse();
-  return sort === "priority" ? newest.sort(byPriority) : newest;
+  switch (sort) {
+    case "priority":
+      return newest.sort(byPriority);
+    case "newest":
+      return newest;
+    case "oldest":
+      return [...runs];
+    case "name":
+      return newest.sort(byName);
+    case "name-desc":
+      return newest.sort((a, b) => byName(b, a));
+  }
 }
 
 // `needle` is already trimmed and lower-cased, so a list is not normalized once per run
@@ -79,20 +118,14 @@ export type Tally = {
   progress: number;
   attention: number;
   conforming: number;
-  nonConforming: number;
-  review: number;
-  queued: number;
   awaiting: number;
 };
 
 export function tally(runs: Run[]): Tally {
-  const counts: Tally = { all: runs.length, progress: 0, attention: 0, conforming: 0, nonConforming: 0, review: 0, queued: 0, awaiting: 0 };
+  const counts: Tally = { all: runs.length, progress: 0, attention: 0, conforming: 0, awaiting: 0 };
   for (const run of runs) {
     counts[filterOf(run)] += 1;
     if (awaitingDecision(run)) counts.awaiting += 1;
-    if (run.state === "queued") counts.queued += 1;
-    if (run.result?.outcome === "Non-conforming") counts.nonConforming += 1;
-    if (run.result?.outcome === "Needs review") counts.review += 1;
   }
   return counts;
 }

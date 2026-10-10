@@ -2,9 +2,11 @@
 
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
 
+import { useToast } from "@/components/toaster";
 import { accessToken, forgetAccessToken } from "@/lib/access-token";
 import { startPolling } from "@/lib/poll";
 import { isActive } from "@/lib/runs";
+import { skippedToast, uploadSummary } from "@/lib/uploads";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -192,10 +194,12 @@ const ReportContext = createContext<{
   loaded: boolean;
   // the server could not be reached by the last request
   offline: boolean;
-  // something the user should know about their last upload, e.g. files that were skipped
-  notice: string | null;
-  dismissNotice: () => void;
+  // asks the server now instead of at the next attempt (which grows longer after each failure)
+  retry: () => Promise<void>;
   upload: (files: File[]) => void;
+  // tries an upload that failed again, or forgets it (it is not on the server, so there is nothing else to remove)
+  retryUpload: (id: string) => void;
+  dismissRun: (id: string) => void;
   // records a person's decision on a finished run; rejects with the server's reason when it refuses (a reason is missing, the lot was decided already)
   decide: (id: string, decision: Decision, by: string, reason: string) => Promise<void>;
 } | null>(null);
@@ -206,7 +210,9 @@ export function ReportProvider({ children }: { children: ReactNode }) {
   const [runs, setRuns] = useState<Run[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [offline, setOffline] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const { toast } = useToast();
+  const wasOffline = useRef(false);
+  const failedFiles = useRef(new Map<string, File>()); // the files of uploads that failed, to try them again; not state, nobody renders them
 
   const running = runs.filter(isActive).length;
   // while anything is unfinished, and while the server cannot be reached: with nothing running there is no other way to find out it is back
@@ -221,14 +227,19 @@ export function ReportProvider({ children }: { children: ReactNode }) {
       const jobs = await fetchJobs();
       setRuns((all) => merge(jobs, all));
       setOffline(false);
+      if (wasOffline.current) {
+        wasOffline.current = false;
+        toast({ tone: "info", title: "The server is reachable again", description: "The list is up to date." });
+      }
       return true;
     } catch {
+      wasOffline.current = true;
       setOffline(true); // keep what we show and try again
       return false;
     } finally {
       inFlight.current = false;
     }
-  }, []);
+  }, [toast]);
 
   // restore the runs of an earlier visit
   useEffect(() => {
@@ -244,8 +255,10 @@ export function ReportProvider({ children }: { children: ReactNode }) {
       return toRun(await request("/jobs", { method: "POST", body }).then((response) => response.json()));
     } catch (error) {
       const message = error instanceof Error ? error.message : "the upload failed";
+      const id = crypto.randomUUID();
+      failedFiles.current.set(id, file);
       return {
-        id: crypto.randomUUID(),
+        id,
         filename: file.name,
         state: "error",
         startedAt: 0,
@@ -257,15 +270,39 @@ export function ReportProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // each run appears as soon as its upload ends; one toast says how the batch went
+  async function startUploads(files: File[]) {
+    const results = await Promise.all(
+      files.map((file) =>
+        uploadOne(file).then((run) => {
+          setRuns((all) => [...all, run]);
+          return run;
+        }),
+      ),
+    );
+    const summary = uploadSummary(results.map((run) => ({ filename: run.filename, ok: !run.local, message: run.message })));
+    if (summary) toast(summary);
+  }
+
   function upload(files: File[]) {
     const pdfs = files.filter(isPdf);
-    const skipped = files.length - pdfs.length;
-    if (skipped > 0) setNotice(`${skipped} ${skipped === 1 ? "file was" : "files were"} skipped: only PDF documents can be analyzed.`);
+    const skipped = skippedToast(files.length - pdfs.length);
+    if (skipped) toast(skipped);
     if (pdfs.length === 0) return;
     preloadReport(); // while the agent runs
-    for (const file of pdfs) {
-      void uploadOne(file).then((run) => setRuns((all) => [...all, run]));
-    }
+    void startUploads(pdfs);
+  }
+
+  function dismissRun(id: string) {
+    failedFiles.current.delete(id);
+    setRuns((all) => all.filter((run) => run.id !== id || !run.local));
+  }
+
+  function retryUpload(id: string) {
+    const file = failedFiles.current.get(id);
+    if (!file) return;
+    dismissRun(id);
+    void startUploads([file]);
   }
 
   async function decide(id: string, decision: Decision, by: string, reason: string) {
@@ -275,7 +312,9 @@ export function ReportProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <ReportContext value={{ runs, running, loaded, offline, notice, dismissNotice: () => setNotice(null), upload, decide }}>{children}</ReportContext>
+    <ReportContext value={{ runs, running, loaded, offline, retry: async () => void (await refresh()), upload, retryUpload, dismissRun, decide }}>
+      {children}
+    </ReportContext>
   );
 }
 

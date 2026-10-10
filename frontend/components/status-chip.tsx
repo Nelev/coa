@@ -30,17 +30,17 @@ function chipOf(run: Run): Chip {
   }
 }
 
-function ChipBadge({ chip: { label, variant, icon }, title }: { chip: Chip; title?: string }) {
+function ChipBadge({ chip: { label, variant, icon }, title, large }: { chip: Chip; title?: string; large?: boolean }) {
   return (
-    <Badge variant={variant} title={title} className="h-6 gap-1.5 px-2.5 text-xs">
+    <Badge variant={variant} title={title} className={large ? "h-8 gap-2 px-3.5 text-sm [&_svg]:size-4" : "h-6 gap-1.5 px-2.5 text-xs"}>
       {icon}
       {label}
     </Badge>
   );
 }
 
-export function StatusChip({ run }: { run: Run }) {
-  return <ChipBadge chip={chipOf(run)} />;
+export function StatusChip({ run, large }: { run: Run; large?: boolean }) {
+  return <ChipBadge chip={chipOf(run)} large={large} />;
 }
 
 const DECISIONS: Record<Decision, Chip> = {
@@ -50,8 +50,8 @@ const DECISIONS: Record<Decision, Chip> = {
 };
 
 // what a person decided about the lot; nothing while nobody has
-export function DecisionChip({ run }: { run: Run }) {
+export function DecisionChip({ run, large }: { run: Run; large?: boolean }) {
   if (!run.decision) return null;
   const { label } = DECISIONS[run.decision];
-  return <ChipBadge chip={DECISIONS[run.decision]} title={run.decidedBy ? `${label} by ${run.decidedBy}` : label} />;
+  return <ChipBadge chip={DECISIONS[run.decision]} large={large} title={run.decidedBy ? `${label} by ${run.decidedBy}` : label} />;
 }

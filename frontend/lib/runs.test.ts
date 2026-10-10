@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Outcome, Run } from "@/components/report-context";
-import { awaitingDecision, filterOf, matchesQuery, requiresReason, sortRuns, tally, visibleRuns } from "@/lib/runs";
+import { awaitingDecision, filterOf, matchesQuery, nextSort, parseFilter, parseSort, requiresReason, sortRuns, tally, visibleRuns } from "@/lib/runs";
 
 function run(id: string, state: Run["state"], outcome?: Outcome, extra: Partial<Run> = {}): Run {
   const result = outcome && { outcome, counts: { pass: 1, fail: 0, review: 0 }, product: "Citric Acid", lot: `L-${id}`, supplier: "Alpina" };
@@ -70,7 +70,7 @@ describe("visibleRuns", () => {
 
 describe("tally", () => {
   it("counts the runs per filter and the details the tiles show", () => {
-    expect(tally(RUNS)).toEqual({ all: 7, progress: 2, attention: 4, conforming: 1, nonConforming: 1, review: 1, queued: 1, awaiting: 4 });
+    expect(tally(RUNS)).toEqual({ all: 7, progress: 2, attention: 4, conforming: 1, awaiting: 4 });
   });
 });
 
@@ -113,5 +113,38 @@ describe("decisions", () => {
     expect(requiresReason("approved", run("legacy", "done"))).toBe(true); // an outcome that is not known is not assumed to conform
     expect(requiresReason("rejected", open)).toBe(true);
     expect(requiresReason("on_hold", open)).toBe(true);
+  });
+});
+
+describe("the address", () => {
+  it("falls back to the defaults for anything it does not know", () => {
+    expect(parseFilter("attention")).toBe("attention");
+    expect(parseFilter("nonsense")).toBe("all");
+    expect(parseFilter(null)).toBe("all");
+    expect(parseSort("name-desc")).toBe("name-desc");
+    expect(parseSort("<script>")).toBe("priority");
+    expect(parseSort(undefined)).toBe("priority");
+  });
+});
+
+describe("sorting by column", () => {
+  it("reverses a column when it is pressed again, and starts others at their natural order", () => {
+    expect(nextSort("priority", "name")).toBe("name");
+    expect(nextSort("name", "name")).toBe("name-desc");
+    expect(nextSort("name-desc", "name")).toBe("name");
+    expect(nextSort("priority", "when")).toBe("newest");
+    expect(nextSort("newest", "when")).toBe("oldest");
+    expect(nextSort("name", "status")).toBe("priority");
+  });
+
+  it("orders by file name, numbers as numbers", () => {
+    const files = ["coa-10.pdf", "coa-2.pdf", "Coa-1.pdf"].map((filename, i) => run(`r${i}`, "done", "Conforming", { filename }));
+    expect(sortRuns(files, "name").map((r) => r.filename)).toEqual(["Coa-1.pdf", "coa-2.pdf", "coa-10.pdf"]);
+    expect(sortRuns(files, "name-desc").map((r) => r.filename)).toEqual(["coa-10.pdf", "coa-2.pdf", "Coa-1.pdf"]);
+  });
+
+  it("lists the oldest first, as the server does", () => {
+    expect(sortRuns(RUNS, "oldest").map((r) => r.id)).toEqual(RUNS.map((r) => r.id));
+    expect(sortRuns(RUNS, "newest")[0].id).toBe("invoice");
   });
 });
