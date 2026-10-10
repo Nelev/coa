@@ -1,23 +1,38 @@
 "use client";
 
-import { Search, WifiOff, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Keyboard, Rows3, Search } from "lucide-react";
+import dynamic from "next/dynamic";
+import { useSearchParams } from "next/navigation";
+import { useDeferredValue, useEffect, useRef, useState } from "react";
 
-import { FilterTiles } from "@/components/filter-tiles";
+import { FILTER_LABELS, FilterBar } from "@/components/filter-bar";
 import { useReport } from "@/components/report-context";
-import { RunRow } from "@/components/run-row";
+import { RunsTable } from "@/components/runs-table";
+import { SkeletonRegion } from "@/components/skeleton-region";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { UploadButton } from "@/components/upload-button";
-import { type Filter, type Sort, tally, visibleRuns } from "@/lib/runs";
+import { type Filter, parseFilter, parseSort, SORT_LABELS, type Sort, tally, visibleRuns } from "@/lib/runs";
+import { useOnceOpened } from "@/lib/use-once-opened";
+import { usePersistedChoice } from "@/lib/use-persisted-choice";
 
-// j / k move between the rows, Enter opens the focused one (they are links)
-function useRowKeys(list: React.RefObject<HTMLElement | null>) {
+// the list of keys (a dialog) is loaded the first time it is asked for
+const ShortcutsDialog = dynamic(() => import("@/components/shortcuts-dialog").then((m) => m.ShortcutsDialog));
+
+const typing = (target: EventTarget | null) => target instanceof Element && target.closest("input, textarea, select, [contenteditable]");
+
+// j / k move between the rows and Enter opens the focused one (the file name is a link); / goes to the search and ? lists the keys
+function useListKeys(list: React.RefObject<HTMLElement | null>, search: React.RefObject<HTMLInputElement | null>, showHelp: (show: boolean) => void) {
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      const target = event.target as HTMLElement;
-      if (event.metaKey || event.ctrlKey || event.altKey || target.closest("input, textarea, select, [contenteditable]")) return;
+      if (event.metaKey || event.ctrlKey || event.altKey || typing(event.target)) return;
+      if (event.key === "/" || event.key === "?") {
+        event.preventDefault();
+        if (event.key === "/") search.current?.focus();
+        else showHelp(true);
+        return;
+      }
       if (event.key !== "j" && event.key !== "k") return;
       const rows = Array.from(list.current?.querySelectorAll<HTMLElement>("[data-row]") ?? []);
       const at = rows.indexOf(document.activeElement as HTMLElement);
@@ -27,12 +42,43 @@ function useRowKeys(list: React.RefObject<HTMLElement | null>) {
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [list]);
+  }, [list, search, showHelp]);
 }
 
+// the address says which filter and sort are on (so a link can point at "in progress"); it changes without a round trip to the server
+function setParam(key: string, value: string, fallback: string) {
+  const next = new URLSearchParams(window.location.search);
+  if (value === fallback) next.delete(key);
+  else next.set(key, value);
+  const query = next.toString();
+  window.history.replaceState(null, "", query ? `?${query}` : window.location.pathname);
+}
+
+// rows can be made tighter for a mouse; only a preference, so it is kept in the browser
+const DENSITIES = ["comfortable", "compact"] as const;
+
+const SAMPLES = [
+  { file: "sample_coa_citric_acid.pdf", label: "Try a sample certificate" },
+  { file: "sample_coa_defective.pdf", label: "Try one with defects" },
+];
+
 function EmptyState() {
+  const { upload } = useReport();
+  const [failed, setFailed] = useState(false);
+
+  async function trySample(file: string) {
+    setFailed(false);
+    try {
+      const response = await fetch(`/samples/${file}`);
+      if (!response.ok) throw new Error(String(response.status));
+      upload([new File([await response.blob()], file, { type: "application/pdf" })]);
+    } catch {
+      setFailed(true);
+    }
+  }
+
   return (
-    <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed px-6 py-16 text-center">
+    <div className="flex flex-col items-center gap-4 rounded-2xl border border-dashed px-6 py-16 text-center">
       <h2 className="text-lg font-semibold">Analyze your first Certificate of Analysis</h2>
       <p className="max-w-md text-sm text-muted-foreground">
         Drop PDF certificates anywhere on this page, or pick them from your computer. Each one is checked against the plant specification, and you see
@@ -41,28 +87,59 @@ function EmptyState() {
       <div className="w-48">
         <UploadButton />
       </div>
+      <div className="flex flex-wrap justify-center gap-2">
+        {SAMPLES.map(({ file, label }) => (
+          <Button key={file} variant="outline" size="sm" onClick={() => trySample(file)}>
+            {label}
+          </Button>
+        ))}
+      </div>
+      {failed ? (
+        <p role="alert" className="text-sm text-destructive">
+          The sample could not be loaded.
+        </p>
+      ) : null}
     </div>
   );
 }
 
-function ListSkeleton() {
+// The shape of the page while the first answer is on its way: the attention card, the filters, the search and a few rows, so that
+// nothing jumps when the runs arrive.
+function OverviewSkeleton() {
   return (
-    <div className="flex flex-col gap-px overflow-hidden rounded-xl ring-1 ring-foreground/10" aria-hidden>
-      {[0, 1, 2].map((i) => (
-        <Skeleton key={i} className="h-16 rounded-none" />
-      ))}
-    </div>
+    <SkeletonRegion label="Loading runs…" className="flex flex-col gap-5">
+      <Skeleton className="h-10 w-full max-w-xl rounded-xl" />
+      <Skeleton className="h-9 w-full max-w-sm rounded-lg" />
+      <div className="overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="flex items-center gap-4 border-b px-4 py-4 last:border-b-0">
+            <Skeleton className="h-6 w-28 rounded-full" />
+            <div className="flex flex-1 flex-col gap-2">
+              <Skeleton className="h-4 w-2/3" />
+              <Skeleton className="h-3 w-1/3" />
+            </div>
+            <Skeleton className="hidden h-4 w-24 md:block" />
+          </div>
+        ))}
+      </div>
+    </SkeletonRegion>
   );
 }
 
 export function Overview() {
-  const { runs, loaded, offline, notice, dismissNotice } = useReport();
-  const [filter, setFilter] = useState<Filter>("all");
-  const [sort, setSort] = useState<Sort>("priority");
+  const { runs, loaded, retryUpload, dismissRun } = useReport();
+  const params = useSearchParams();
+  const filter = parseFilter(params.get("filter"));
+  const sort = parseSort(params.get("sort"));
   const [query, setQuery] = useState("");
+  const [density, setDensity] = usePersistedChoice("runs-density", DENSITIES);
+  const compact = density === "compact";
+  const [help, setHelp] = useState(false);
+  const helpUsed = useOnceOpened(help);
   const [now, setNow] = useState(() => Date.now());
-  const list = useRef<HTMLUListElement>(null);
-  useRowKeys(list);
+  const list = useRef<HTMLTableSectionElement>(null);
+  const search = useRef<HTMLInputElement>(null);
+  useListKeys(list, search, setHelp);
 
   // keeps "2 min ago" current without re-rendering every second
   useEffect(() => {
@@ -70,66 +147,94 @@ export function Overview() {
     return () => clearInterval(timer);
   }, []);
 
-  const shown = visibleRuns(runs, filter, query, sort);
+  const changeFilter = (value: Filter) => setParam("filter", value, "all");
+  const changeSort = (value: Sort) => setParam("sort", value, "priority");
+  // typing stays responsive however long the list is: the filtering follows a moment behind the field
+  const deferredQuery = useDeferredValue(query);
+  const shown = visibleRuns(runs, filter, deferredQuery, sort);
+  const counts = tally(runs);
 
   return (
     <div className="flex flex-col gap-5">
-      {offline && (
-        <p role="alert" className="flex items-center gap-2 rounded-lg bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          <WifiOff className="size-4 shrink-0" />
-          The server cannot be reached. What you see may be out of date; it keeps trying.
-        </p>
-      )}
-      {notice ? (
-        <p role="status" className="flex items-center justify-between gap-2 rounded-lg bg-warning/10 px-4 py-3 text-sm text-warning">
-          {notice}
-          <Button variant="ghost" size="icon-xs" aria-label="Dismiss" onClick={dismissNotice}>
-            <X />
-          </Button>
-        </p>
-      ) : null}
-
       {!loaded ? (
-        <ListSkeleton />
+        <OverviewSkeleton />
       ) : runs.length === 0 ? (
         <EmptyState />
       ) : (
         <>
-          <FilterTiles tally={tally(runs)} filter={filter} onChange={setFilter} />
+          <FilterBar tally={counts} filter={filter} onChange={changeFilter} />
 
           <div className="flex flex-wrap items-center gap-3">
             <div className="relative min-w-48 flex-1 sm:max-w-sm">
               <Search aria-hidden className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-subtle-foreground" />
               <Input
+                ref={search}
                 type="search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Search file, product, lot or supplier"
                 aria-label="Search runs"
-                className="h-9 pl-8"
+                aria-keyshortcuts="/"
+                className="h-9 pr-8 pl-8 pointer-coarse:h-10"
               />
+              <kbd
+                aria-hidden
+                className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded border bg-muted px-1.5 font-mono text-[0.7rem] text-subtle-foreground pointer-coarse:hidden"
+              >
+                /
+              </kbd>
             </div>
-            <label className="ml-auto flex items-center gap-2 text-sm text-muted-foreground">
+            {/* the column headers sort on a wide screen; the phone layout has no headers */}
+            <label className="flex items-center gap-2 text-sm text-muted-foreground md:hidden">
               Sort
               <select
                 value={sort}
-                onChange={(event) => setSort(event.target.value as Sort)}
-                className="h-9 rounded-lg border border-input bg-card px-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onChange={(event) => changeSort(parseSort(event.target.value))}
+                className="h-10 rounded-lg border border-field bg-card px-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                <option value="priority">Priority</option>
-                <option value="newest">Newest</option>
+                {Object.entries(SORT_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
               </select>
             </label>
+            <div className="ml-auto flex items-center gap-2">
+              <p role="status" className="text-sm text-muted-foreground tabular-nums">
+                {shown.length === runs.length ? `${runs.length} ${runs.length === 1 ? "run" : "runs"}` : `${shown.length} of ${runs.length} runs`}
+                {filter !== "all" && <span className="sr-only"> ({FILTER_LABELS[filter]})</span>}
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                aria-pressed={compact}
+                onClick={() => setDensity(compact ? "comfortable" : "compact")}
+                className="pointer-coarse:hidden"
+              >
+                <Rows3 />
+                Compact
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Keyboard shortcuts"
+                aria-keyshortcuts="?"
+                onClick={() => setHelp(true)}
+                className="pointer-coarse:hidden"
+              >
+                <Keyboard />
+              </Button>
+            </div>
           </div>
 
           {shown.length === 0 ? (
             <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed px-6 py-12 text-center">
-              <p className="text-sm text-muted-foreground">No runs match{query ? ` “${query}”` : " this filter"}.</p>
+              <p className="text-sm text-muted-foreground">No runs match{deferredQuery ? ` “${deferredQuery}”` : " this filter"}.</p>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  setFilter("all");
+                  changeFilter("all");
                   setQuery("");
                 }}
               >
@@ -137,14 +242,18 @@ export function Overview() {
               </Button>
             </div>
           ) : (
-            <ul ref={list} className="divide-y overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10" aria-label="Runs">
-              {shown.map((run) => (
-                <li key={run.id} className="[contain-intrinsic-size:auto_4.5rem] [content-visibility:auto]">
-                  <RunRow run={run} now={now} />
-                </li>
-              ))}
-            </ul>
+            <RunsTable
+              runs={shown}
+              now={now}
+              sort={sort}
+              onSort={changeSort}
+              compact={compact}
+              body={list}
+              onRetry={retryUpload}
+              onDismiss={dismissRun}
+            />
           )}
+          {helpUsed ? <ShortcutsDialog open={help} onOpenChange={setHelp} /> : null}
         </>
       )}
     </div>

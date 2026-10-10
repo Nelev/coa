@@ -1,23 +1,40 @@
 import type { Run } from "@/components/report-context";
 import { RunIcon } from "@/components/run-icon";
 import { formatDuration, formatMoment } from "@/lib/format";
+import { isActive } from "@/lib/runs";
+import { cn } from "@/lib/utils";
 
-// what the agent reported, in order; the last status shows the run's state, every earlier one is done
-export function Steps({ run: { statuses, state, startedAt, finishedAt } }: { run: Run }) {
+const STATE_WORDS: Record<Run["state"], string> = { queued: "waiting", loading: "in progress", done: "done", error: "failed" };
+
+// What the agent reported, in order, as a timeline: the last status shows the run's state, every earlier one is done. While the run
+// is going, the last step is the current one (aria-current), and each step says its state in words, not only by its icon.
+export function Steps({ run }: { run: Run }) {
+  const { statuses, state, startedAt, finishedAt } = run;
+  const running = isActive(run);
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex max-w-xl flex-col gap-6">
       {statuses.length === 0 ? (
         <p className="text-sm text-muted-foreground">No step has been reported yet.</p>
       ) : (
-        <ol className="flex flex-col gap-3 text-sm">
-          {statuses.map((status, i) => (
-            // the status texts can repeat, so the position is the key
-            // biome-ignore lint/suspicious/noArrayIndexKey: the list only grows at the end
-            <li key={i} className="flex items-center gap-3">
-              <RunIcon state={i === statuses.length - 1 ? state : "done"} />
-              {status}
-            </li>
-          ))}
+        <ol className="flex flex-col text-sm">
+          {statuses.map((status, i) => {
+            const last = i === statuses.length - 1;
+            const stepState = last ? state : "done";
+            return (
+              // the status texts can repeat, so the position is the key
+              // biome-ignore lint/suspicious/noArrayIndexKey: the list only grows at the end
+              <li key={i} aria-current={last && running ? "step" : undefined} className="relative flex gap-3 pb-4 last:pb-0">
+                {!last && <span aria-hidden className="absolute top-6 bottom-0 left-2 w-px -translate-x-1/2 bg-border" />}
+                <span className="relative z-10 mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full bg-background">
+                  <RunIcon state={stepState} />
+                </span>
+                <span className={cn(last && running && "font-medium")}>
+                  {status}
+                  <span className="sr-only"> ({STATE_WORDS[stepState]})</span>
+                </span>
+              </li>
+            );
+          })}
         </ol>
       )}
       {startedAt > 0 && (

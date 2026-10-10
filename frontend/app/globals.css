@@ -14,6 +14,7 @@
     --color-info: var(--info);
     --color-ring: var(--ring);
     --color-input: var(--input);
+    --color-field: var(--field);
     --color-border: var(--border);
     --color-destructive: var(--destructive);
     --color-accent-foreground: var(--accent-foreground);
@@ -30,6 +31,8 @@
     --color-card: var(--card);
     --color-foreground: var(--foreground);
     --color-background: var(--background);
+    --default-transition-duration: 150ms;
+    --default-transition-timing-function: cubic-bezier(0.2, 0.7, 0.2, 1);
     --radius-sm: calc(var(--radius) * 0.6);
     --radius-md: calc(var(--radius) * 0.8);
     --radius-lg: var(--radius);
@@ -39,29 +42,37 @@
     --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* Light theme. Neutrals are the same cool slate (hue 265) as the dark one; the status colors are dark enough for AA text on every surface
+   (lib/contrast.test.ts checks both themes). --field is the border of form controls: 3:1 against the surface, as WCAG 1.4.11 asks. */
 :root {
+    color-scheme: light;
+    --background: oklch(0.975 0.004 265);
+    --foreground: oklch(0.19 0.015 265);
     --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
+    --card-foreground: oklch(0.19 0.015 265);
     --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.457 0.24 277.023);
-    --primary-foreground: oklch(0.962 0.018 272.314);
-    --secondary: oklch(0.967 0.001 286.375);
-    --secondary-foreground: oklch(0.21 0.006 285.885);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
+    --popover-foreground: oklch(0.19 0.015 265);
+    --primary: oklch(0.5 0.2 277);
+    --primary-foreground: oklch(0.98 0.01 275);
+    --secondary: oklch(0.94 0.008 265);
+    --secondary-foreground: oklch(0.21 0.015 265);
+    --muted: oklch(0.95 0.006 265);
+    --muted-foreground: oklch(0.46 0.02 265);
+    --subtle-foreground: oklch(0.5 0.02 265);
+    --accent: oklch(0.93 0.01 265);
+    --accent-foreground: oklch(0.19 0.015 265);
+    --destructive: oklch(0.46 0.2 25);
+    --success: oklch(0.43 0.11 155);
+    --warning: oklch(0.46 0.11 65);
+    --info: oklch(0.46 0.13 240);
+    --border: oklch(0.19 0.015 265 / 12%);
+    --input: oklch(0.19 0.015 265 / 8%);
+    --field: oklch(0.62 0.015 265);
+    --ring: oklch(0.5 0.2 277);
     --radius: 0.625rem;
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
 }
 
-/* The app is dark only: <html class="dark">. Neutrals are a cool slate (hue 265), surfaces get lighter as they rise. */
+/* Dark theme: <html class="dark">, set by the theme script (system) or by the cookie (chosen). Surfaces get lighter as they rise. */
 .dark {
     color-scheme: dark;
     --background: oklch(0.16 0.012 265);
@@ -85,6 +96,7 @@
     --info: oklch(0.75 0.12 235);
     --border: oklch(1 0 0 / 9%);
     --input: oklch(1 0 0 / 14%);
+    --field: oklch(0.55 0.015 265);
     --ring: oklch(0.68 0.16 275);
 }
 
@@ -97,7 +109,33 @@
     }
   html {
     @apply font-sans;
+    scroll-padding-top: 4.5rem; /* a focused or linked element is never hidden under the sticky header (WCAG 2.4.11) */
     }
+  h1, h2, h3 {
+    text-wrap: balance;
+    }
+  p {
+    text-wrap: pretty;
+    }
+  /* a popup that has finished its exit animation stays as the animation left it (invisible) until it unmounts, instead of snapping back */
+  [data-closed] {
+    --tw-animation-fill-mode: forwards;
+    }
+  /* one focus ring for whatever has no ring of its own */
+  :where(a, button, summary, [role="button"], [tabindex]):focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    }
+}
+
+/* People who ask for less motion get none: transitions and animations end at once (the login page's canvas stops itself in JS) */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* the moving bar of a running analysis: it only shows that work is going on */
@@ -116,9 +154,129 @@
   }
 }
 
-/* the report lays its details out in columns (the model's choice): on a phone they stack, so cards and tables keep their width */
-@media (max-width: 40rem) {
-  .report [class*="grid-cols-"] {
-    grid-template-columns: minmax(0, 1fr);
+
+/* ---- login background: a pharmaceutical line (components/login/) ---- */
+.login-bg {
+  background:
+    radial-gradient(120% 80% at 50% 0%, oklch(0.21 0.045 250) 0%, transparent 60%),
+    radial-gradient(90% 70% at 50% 110%, oklch(0.2 0.04 195) 0%, transparent 65%),
+    var(--background);
+}
+
+.aurora {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(70px);
+  opacity: 0.7;
+  will-change: transform;
+}
+
+.aurora-1 {
+  top: -20%;
+  left: -12%;
+  width: 55vmax;
+  height: 55vmax;
+  background: radial-gradient(circle at 30% 30%, oklch(0.5 0.15 255), transparent 65%);
+  animation: aurora-drift-1 28s ease-in-out infinite alternate;
+}
+
+.aurora-2 {
+  right: -15%;
+  bottom: -28%;
+  width: 60vmax;
+  height: 60vmax;
+  background: radial-gradient(circle at 60% 60%, oklch(0.62 0.12 195), transparent 65%);
+  opacity: 0.5;
+  animation: aurora-drift-2 34s ease-in-out infinite alternate;
+}
+
+.aurora-3 {
+  top: 30%;
+  left: 38%;
+  width: 36vmax;
+  height: 36vmax;
+  background: radial-gradient(circle, oklch(0.64 0.15 160), transparent 65%);
+  opacity: 0.2;
+  animation: aurora-drift-3 40s ease-in-out infinite alternate;
+}
+
+@keyframes aurora-drift-1 {
+  to { transform: translate3d(22vw, 14vh, 0) scale(1.15) rotate(25deg); }
+}
+
+@keyframes aurora-drift-2 {
+  to { transform: translate3d(-24vw, -16vh, 0) scale(0.9) rotate(-20deg); }
+}
+
+@keyframes aurora-drift-3 {
+  to { transform: translate3d(-18vw, 12vh, 0) scale(1.25); }
+}
+
+/* graph paper, as on a lab printout, fading out towards the edges */
+.login-grid {
+  background-image:
+    linear-gradient(to right, oklch(1 0 0 / 5%) 1px, transparent 1px),
+    linear-gradient(to bottom, oklch(1 0 0 / 5%) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse 75% 65% at 50% 45%, #000 20%, transparent 78%);
+}
+
+.login-vignette {
+  background: radial-gradient(ellipse at center, transparent 40%, oklch(0.12 0.01 255 / 70%) 100%);
+}
+
+/* a light that slowly circles the card's edge; --glow-angle is animatable because it is a registered property */
+@property --glow-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes glow-spin {
+  to { --glow-angle: 360deg; }
+}
+
+.card-glow {
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: conic-gradient(from var(--glow-angle), transparent 0deg, oklch(0.78 0.13 195) 60deg, oklch(0.8 0.15 160) 120deg, transparent 180deg, transparent 360deg);
+  animation: glow-spin 10s linear infinite;
+  filter: blur(14px);
+  opacity: 0.5;
+}
+
+.card-glow-edge {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(from var(--glow-angle), transparent 0deg, oklch(0.85 0.12 195) 60deg, oklch(0.86 0.13 160) 120deg, transparent 180deg, transparent 360deg);
+  animation: glow-spin 10s linear infinite;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora,
+  .card-glow,
+  .card-glow-edge {
+    animation: none;
+  }
+  .card-glow,
+  .card-glow-edge {
+    --glow-angle: 40deg;
+  }
+}
+
+/* the decision bar at the foot of a phone's screen must not hide what has focus (WCAG 2.4.11) */
+html:has([data-decision-bar]) {
+  scroll-padding-bottom: 6rem;
+}
+
+/* on a phone the toasts rise above the decision bar instead of covering it */
+@media (max-width: 1023px) {
+  html:has([data-decision-bar]) .toaster {
+    bottom: 5.5rem;
   }
 }

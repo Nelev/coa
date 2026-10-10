@@ -6,7 +6,8 @@ import { useRef } from "react";
 import { useReport } from "@/components/report-context";
 import { Button } from "@/components/ui/button";
 
-export function UploadButton() {
+// compact: on a phone only the icon shows (the label stays for screen readers)
+export function UploadButton({ compact = false }: { compact?: boolean }) {
   const { upload } = useReport();
   const input = useRef<HTMLInputElement>(null);
 
@@ -24,9 +25,9 @@ export function UploadButton() {
           upload(files);
         }}
       />
-      <Button className="w-full" onClick={() => input.current?.click()}>
+      <Button className={compact ? "w-full max-sm:size-8 max-sm:pointer-coarse:size-10 max-sm:p-0" : "w-full"} onClick={() => input.current?.click()}>
         <Upload />
-        Upload documents
+        <span className={compact ? "max-sm:sr-only" : undefined}>Upload documents</span>
       </Button>
     </>
   );
