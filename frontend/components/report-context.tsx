@@ -3,11 +3,10 @@
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
 
 import { accessToken, forgetAccessToken } from "@/lib/access-token";
+import { startPolling } from "@/lib/poll";
 import { isActive } from "@/lib/runs";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-
-const POLL_MS = 1000;
 
 // a person's decision on a finished analysis; approved and rejected are final, a lot on hold can be decided again
 export type Decision = "approved" | "rejected" | "on_hold";
@@ -210,18 +209,22 @@ export function ReportProvider({ children }: { children: ReactNode }) {
   const [notice, setNotice] = useState<string | null>(null);
 
   const running = runs.filter(isActive).length;
-  const polling = running > 0;
+  // while anything is unfinished, and while the server cannot be reached: with nothing running there is no other way to find out it is back
+  const polling = running > 0 || offline;
   const inFlight = useRef(false);
 
+  // whether the server answered
   const refresh = useCallback(async () => {
-    if (inFlight.current) return; // a slow answer must not pile requests up
+    if (inFlight.current) return true; // a slow answer must not pile requests up; it is not a failure either
     inFlight.current = true;
     try {
       const jobs = await fetchJobs();
       setRuns((all) => merge(jobs, all));
       setOffline(false);
+      return true;
     } catch {
       setOffline(true); // keep what we show and try again
+      return false;
     } finally {
       inFlight.current = false;
     }
@@ -232,11 +235,7 @@ export function ReportProvider({ children }: { children: ReactNode }) {
     refresh().finally(() => setLoaded(true));
   }, [refresh]);
 
-  useEffect(() => {
-    if (!polling) return;
-    const timer = setInterval(refresh, POLL_MS);
-    return () => clearInterval(timer);
-  }, [polling, refresh]);
+  useEffect(() => (polling ? startPolling(refresh) : undefined), [polling, refresh]);
 
   async function uploadOne(file: File): Promise<Run> {
     try {

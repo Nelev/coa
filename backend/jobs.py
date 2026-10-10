@@ -28,6 +28,7 @@ ADDED_COLUMNS = {
     "decided_by": "TEXT",
     "decided_at": "INTEGER",
     "reason": "TEXT",
+    "owner": "TEXT",
 }
 # what a listing returns: everything but the (large) spec
 SUMMARY = "id, filename, status, statuses, error, started_at, " + ", ".join(ADDED_COLUMNS)
@@ -74,12 +75,15 @@ class Jobs:
     def pdf_path(self, job_id: str) -> Path:
         return self.uploads / f"{job_id}.pdf"
 
-    def create(self, filename: str, pdf: BinaryIO) -> str:
-        """Store the PDF and add a queued job for it; returns the job id, which is also the agent's thread id."""
+    def create(self, filename: str, pdf: BinaryIO, owner: str | None = None) -> str:
+        """Store the PDF and add a queued job for it, owned by the person who uploaded it (their sign-in id).
+
+        Returns the job id, which is also the agent's thread id. Jobs from before owners were recorded have none.
+        """
         job_id = uuid.uuid4().hex
         with self.pdf_path(job_id).open("wb") as saved:
             shutil.copyfileobj(pdf, saved)
-        self._execute("INSERT INTO jobs (id, filename, status) VALUES (?, ?, 'queued')", (job_id, filename))
+        self._execute("INSERT INTO jobs (id, filename, status, owner) VALUES (?, ?, 'queued', ?)", (job_id, filename, owner))
         return job_id
 
     def _with_pdf(self, row: sqlite3.Row) -> dict:
