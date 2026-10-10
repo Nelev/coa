@@ -4,10 +4,13 @@ import queue
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from langgraph.checkpoint.sqlite import SqliteSaver
+from pydantic import BaseModel
 
 from agent.agent import graph
 from jobs import Jobs
@@ -41,8 +44,6 @@ def run_job(job_id: str) -> None:
         store.finish(job_id, values["ui_spec"], values.get("result"))
     except Exception as error:
         store.fail(job_id, str(error) or type(error).__name__)
-    finally:
-        store.pdf_path(job_id).unlink(missing_ok=True)
 
 
 def worker() -> None:
@@ -108,3 +109,41 @@ def get_job(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="no such job")
     return job
+
+
+@app.get("/jobs/{job_id}/pdf")
+def get_pdf(job_id: str):
+    """The uploaded certificate, to open next to its report."""
+    job = store.get(job_id, with_spec=False)
+    if job is None or not job["has_pdf"]:
+        raise HTTPException(status_code=404, detail="no such document")
+    return FileResponse(store.pdf_path(job_id), media_type="application/pdf", filename=job["filename"], content_disposition_type="inline")
+
+
+class Decision(BaseModel):
+    decision: Literal["approved", "rejected", "on_hold"]
+    by: str
+    reason: str = ""
+
+
+@app.post("/jobs/{job_id}/decision")
+def decide_job(job_id: str, body: Decision):
+    """Record a person's decision on a finished analysis: approved, rejected or on_hold.
+
+    A reason is required to reject or hold, and to approve a lot the agent did not find conforming (an override).
+    Approved and rejected are final; a lot on hold can be decided again.
+    """
+    job = store.get(job_id, with_spec=False)
+    if job is None:
+        raise HTTPException(status_code=404, detail="no such job")
+    by, reason = body.by.strip(), body.reason.strip()
+    if not by:
+        raise HTTPException(status_code=422, detail="say who decides")
+    needs_reason = body.decision != "approved" or (job["result"] or {}).get("outcome") != "Conforming"  # rejecting, holding, overriding
+    if needs_reason and not reason:
+        raise HTTPException(status_code=422, detail="a reason is required to reject, hold or approve a lot that does not conform")
+    if job["status"] != "done":
+        raise HTTPException(status_code=409, detail="the analysis has not finished")
+    if not store.decide(job_id, body.decision, by, reason):
+        raise HTTPException(status_code=409, detail="this lot already has a final decision")
+    return store.get(job_id, with_spec=False)

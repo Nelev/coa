@@ -111,7 +111,19 @@ def test_a_job_records_the_status_of_each_node_then_the_ui_spec(start_app, monke
         {"configurable": {"thread_id": created["id"]}},
     )  # the job id is the thread id
     assert seen["bytes"] == b"%PDF-fake"
-    assert not Path(seen["path"]).exists()  # the PDF is removed once the job ends
+    assert Path(seen["path"]).read_bytes() == b"%PDF-fake"  # the certificate is kept: it is the record the decision is about
+
+
+def test_the_certificate_can_be_opened_after_the_job_ends(start_app, monkeypatch):
+    client = start_app()
+    monkeypatch.setattr(main, "agent_app", FakeAgent())
+    job = wait_for_end(client, submit(client, b"%PDF-1", "lot.pdf")["id"])
+
+    assert job["has_pdf"] is True
+    response = client.get(f"/jobs/{job['id']}/pdf")
+    assert (response.content, response.headers["content-type"]) == (b"%PDF-1", "application/pdf")
+    assert "inline" in response.headers["content-disposition"]
+    assert client.get("/jobs/nope/pdf").status_code == 404
 
 
 def test_the_listing_leaves_out_the_report(start_app, monkeypatch):
@@ -251,12 +263,117 @@ def test_the_frontend_origin_is_allowed_by_cors(path, method):
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
 
 
-def test_a_database_from_before_the_result_columns_is_upgraded(tmp_path):
-    with closing(sqlite3.connect(tmp_path / "jobs.db")) as db, db:
+def legacy_jobs_db(directory, extra_columns=""):
+    """A jobs.db from before the columns in jobs.ADDED_COLUMNS (or some of them, in `extra_columns`), with one finished job, 'old'."""
+    with closing(sqlite3.connect(directory / "jobs.db")) as db, db:
         columns = "id TEXT PRIMARY KEY, filename TEXT NOT NULL, status TEXT NOT NULL, statuses TEXT NOT NULL DEFAULT '[]'"
-        db.execute(f"CREATE TABLE jobs ({columns}, ui_spec TEXT, error TEXT, started_at INTEGER)")
+        db.execute(f"CREATE TABLE jobs ({columns}, ui_spec TEXT, error TEXT, started_at INTEGER{extra_columns})")
         db.execute("INSERT INTO jobs (id, filename, status) VALUES ('old', 'old.pdf', 'done')")
+
+
+def test_a_database_from_before_the_result_columns_is_upgraded(tmp_path):
+    legacy_jobs_db(tmp_path)
 
     job = Jobs(tmp_path).get("old")
 
     assert job["filename"] == "old.pdf" and job["result"] is None and job["finished_at"] is None
+
+
+def decide(client, job_id, decision="approved", by="QA Anna", reason=""):
+    return client.post(f"/jobs/{job_id}/decision", json={"decision": decision, "by": by, "reason": reason})
+
+
+@pytest.fixture
+def finished(start_app, monkeypatch):
+    """A finished job (outcome Conforming) in a running app."""
+    client = start_app()
+    monkeypatch.setattr(main, "agent_app", FakeAgent())
+    return client, wait_for_end(client, submit(client)["id"])["id"]
+
+
+def test_a_new_job_has_no_decision(finished):
+    client, job_id = finished
+    job = client.get(f"/jobs/{job_id}").json()
+    assert [job[k] for k in ("decision", "decided_by", "decided_at", "reason")] == [None] * 4
+
+
+def test_a_conforming_lot_can_be_approved_without_a_reason(finished):
+    client, job_id = finished
+    response = decide(client, job_id, by=" QA Anna ")
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["decision"], body["decided_by"], body["reason"]) == ("approved", "QA Anna", "")
+    assert body["decided_at"] and "ui_spec" not in body
+    assert client.get(f"/jobs/{job_id}").json()["decision"] == "approved"  # and it is in the listing too
+    assert client.get("/jobs").json()[0]["decision"] == "approved"
+
+
+@pytest.mark.parametrize("decision", ["rejected", "on_hold"])
+def test_rejecting_or_holding_needs_a_reason(finished, decision):
+    client, job_id = finished
+    assert decide(client, job_id, decision, reason="  ").status_code == 422
+    assert decide(client, job_id, decision, reason="Water above the limit").status_code == 200
+
+
+def test_approving_a_lot_that_does_not_conform_is_an_override_that_needs_a_reason(start_app, monkeypatch):
+    client = start_app()
+    monkeypatch.setattr(main, "agent_app", FakeAgent())
+    monkeypatch.setitem(RESULT, "outcome", "Needs review")
+    job_id = wait_for_end(client, submit(client)["id"])["id"]
+
+    assert decide(client, job_id).status_code == 422
+    assert decide(client, job_id, reason="Lab retest 0.31 %, within the limit").status_code == 200
+
+
+def test_who_decides_is_required(finished):
+    client, job_id = finished
+    assert decide(client, job_id, by="  ").status_code == 422
+    assert decide(client, job_id, decision="maybe").status_code == 422
+
+
+def test_approved_and_rejected_are_final(finished):
+    client, job_id = finished
+    assert decide(client, job_id, "rejected", reason="Wrong lot").status_code == 200
+    again = decide(client, job_id, "approved")
+    assert again.status_code == 409
+    assert client.get(f"/jobs/{job_id}").json()["decision"] == "rejected"
+
+
+def test_a_lot_on_hold_can_be_decided_later(finished):
+    client, job_id = finished
+    assert decide(client, job_id, "on_hold", reason="Waiting for the supplier").status_code == 200
+    assert decide(client, job_id, "approved", by="QA Marco").json()["decided_by"] == "QA Marco"
+
+
+def test_only_a_finished_job_can_be_decided(start_app, monkeypatch):
+    release = threading.Event()
+
+    class WaitingAgent(FakeAgent):
+        def play(self, inputs):
+            release.wait(5)
+            yield from super().play(inputs)
+
+    client = start_app()
+    monkeypatch.setattr(main, "agent_app", WaitingAgent())
+    job_id = submit(client)["id"]
+    try:
+        assert decide(client, job_id, "rejected", reason="r").status_code == 409
+    finally:
+        release.set()
+    assert decide(client, "nope", "rejected", reason="r").status_code == 404
+
+
+def test_a_database_from_before_the_decision_columns_is_upgraded(tmp_path):
+    legacy_jobs_db(tmp_path, ", result TEXT, finished_at INTEGER")
+
+    store = Jobs(tmp_path)
+
+    assert store.get("old")["decision"] is None and store.get("old")["has_pdf"] is False
+    assert store.decide("old", "approved", "QA Anna", "") is True
+
+
+def test_the_frontend_may_post_json_to_the_decision_endpoint():
+    headers = {"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type"}
+    response = TestClient(main.app).options("/jobs/abc/decision", headers=headers)
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
