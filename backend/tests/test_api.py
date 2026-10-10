@@ -173,6 +173,51 @@ def test_an_agent_that_ends_without_a_report_is_an_error(start_app, monkeypatch)
     assert (job["status"], job["error"]) == ("error", "the agent finished without a report")
 
 
+def run_to_the_end(monkeypatch, outcome="Conforming", spec=SPEC):
+    """Runs one job to its end in this thread (the workers have nothing queued) and returns its id."""
+    monkeypatch.setattr(main, "agent_app", FakeAgent("Reading the PDF", spec=spec))
+    monkeypatch.setitem(RESULT, "outcome", outcome)
+    job_id = main.store.create("coa.pdf", io.BytesIO(b"%PDF-fake"))
+    main.run_job(job_id)
+    return job_id
+
+
+@pytest.mark.parametrize("outcome, mailed", [("Non-conforming", True), ("Needs review", False), ("Conforming", False)])
+def test_only_a_lot_that_does_not_conform_is_mailed(start_app, monkeypatch, outcome, mailed):
+    start_app()
+    mails = []
+    monkeypatch.setattr(main, "send_non_conforming_mail", mails.append)
+
+    job_id = run_to_the_end(monkeypatch, outcome)
+
+    assert [(job["id"], job["filename"], job["result"]["outcome"]) for job in mails] == ([(job_id, "coa.pdf", outcome)] if mailed else [])
+
+
+def test_a_job_that_fails_is_not_mailed(start_app, monkeypatch):
+    start_app()
+    mails = []
+    monkeypatch.setattr(main, "send_non_conforming_mail", mails.append)
+
+    job_id = run_to_the_end(monkeypatch, "Non-conforming", spec=None)
+
+    assert main.store.get(job_id)["status"] == "error" and mails == []
+
+
+def test_a_mail_that_cannot_be_sent_leaves_the_job_done(start_app, monkeypatch):
+    start_app()
+
+    def broken(job):
+        raise OSError("mail server down")
+
+    monkeypatch.setattr(main, "send_non_conforming_mail", broken)
+
+    with pytest.raises(OSError):  # it reaches the worker, which logs it and takes the next job
+        run_to_the_end(monkeypatch, "Non-conforming")
+
+    job = main.store.all()[-1]
+    assert job["status"] == "done" and job["error"] is None
+
+
 def test_at_most_the_configured_number_of_jobs_run_at_once(start_app, monkeypatch):
     lock, running, most = threading.Lock(), 0, 0
 

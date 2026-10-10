@@ -12,10 +12,10 @@ from fastapi.responses import FileResponse
 from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import BaseModel
 
-from agent.agent import graph
+from agent.agent import NON_CONFORMING, graph
 from auth import require_user
 from jobs import Jobs
-from notify import send_failure_mail
+from notify import send_non_conforming_mail
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +45,10 @@ def run_job(job_id: str) -> None:
             raise RuntimeError("the agent finished without a report")
         store.finish(job_id, values["ui_spec"], values.get("result"))
     except Exception as error:
-        message = str(error) or type(error).__name__
-        store.fail(job_id, message)
-        try:
-            send_failure_mail(store.get(job_id, with_spec=False), message)
-        except Exception:  # a broken mail server must not take the worker down
-            logger.exception("failure mail for job %s", job_id)
+        store.fail(job_id, str(error) or type(error).__name__)
+    else:  # outside the try: a mail that cannot be sent must not turn a finished job into a failed one (the worker logs it)
+        if (values.get("result") or {}).get("outcome") == NON_CONFORMING:
+            send_non_conforming_mail(store.get(job_id, with_spec=False))
 
 
 def worker() -> None:

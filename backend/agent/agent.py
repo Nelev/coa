@@ -161,13 +161,14 @@ def compare_specs(state: AgentState) -> dict:
     return {"test_checks": test_checks, "issues": issues}
 
 
+NON_CONFORMING = "Non-conforming"
+NOT_A_COA = "Not a CoA"
+
+
 def _outcome(issues: list[dict]) -> str:
     if any(i["severity"] == "critical" for i in issues):
-        return "Non-conforming"
+        return NON_CONFORMING
     return "Needs review" if issues else "Conforming"
-
-
-NOT_A_COA = "Not a CoA"
 
 
 def _result(outcome: str, checks: list[dict], header: dict) -> dict:

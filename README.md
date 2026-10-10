@@ -179,8 +179,11 @@ The API needs a signed-in person for everything under `/jobs`: the frontend send
 `Authorization: Bearer ...` and the API checks it against WorkOS's public keys. Without `WORKOS_CLIENT_ID` it answers 503
 instead of running open. `/health` needs no token, so `curl` the jobs endpoints below with a token from a signed-in session.
 
-Each job records who uploaded it (`owner`, their sign-in id). When a job fails, the API can mail the error. Add these to
-`backend/.env`; without `SMTP_HOST` and `NOTIFY_EMAIL` no mail is sent:
+Each job records who uploaded it (`owner`, their sign-in id).
+
+When an analysis finds a lot **non-conforming**, the API can mail
+its summary (product, lot, supplier, test counts and a link to the job). Add these to `backend/.env`; without `SMTP_HOST` and
+`NOTIFY_EMAIL` no mail is sent:
 
 ```
 SMTP_HOST=smtp.gmail.com
@@ -188,11 +191,12 @@ SMTP_PORT=587                  # default 587; STARTTLS is used when SMTP_USER is
 SMTP_USER=you@gmail.com        # the login; also the "From" address unless SMTP_FROM is set
 SMTP_PASSWORD=...              # Gmail: an App Password (needs 2-Step Verification), not your account password
 SMTP_FROM=alerts@example.com   # optional: the sender, for providers whose login is not an address (Resend: SMTP_USER=resend)
-NOTIFY_EMAIL=you@example.com   # who gets the failure mails
+NOTIFY_EMAIL=you@example.com   # who gets the mails
+APP_URL=http://localhost:3000  # optional: where the frontend is served; the mails then link to the job's page
 ```
 
 Leave `SMTP_USER` out to send without encryption or login, e.g. to a local mail catcher on `127.0.0.1:1025`. A mail that
-cannot be sent is logged and never stops the worker.
+cannot be sent is logged: the job stays done and the worker keeps running. `.env` is loaded when the API starts, so restart it after changing it.
 
 Run the agent on the sample CoA, or on another PDF:
 
