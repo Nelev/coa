@@ -14,7 +14,7 @@ and checks the reported results against the **plant's own specification** for th
 | Report page: model lays out the results as a json-render UI spec, rendered by the frontend | done |
 | `report` node (prose summary of the issues) | not started |
 | Pause / resume (`is_running`, `is_paused`) | state fields only, not wired |
-| API: `POST /jobs` queues the agent on an uploaded PDF; `GET /jobs` and `GET /jobs/{id}` return the progress and the UI spec; `GET /jobs/{id}/pdf` returns the certificate; `POST /jobs/{id}/decision` records a person's decision | done (jobs are kept in SQLite and survive restarts; CORS allows `http://localhost:3000` unless `CORS_ORIGINS` (comma-separated) says otherwise) |
+| API: `POST /jobs` queues the agent on an uploaded PDF; `GET /jobs` and `GET /jobs/{id}` return the progress and the UI spec; `GET /jobs/{id}/pdf` returns the certificate; `POST /jobs/{id}/decision` records a person's decision | done (jobs are kept in SQLite and survive restarts; CORS allows `http://localhost:3000` unless `CORS_ORIGINS` (comma-separated) says otherwise; every `/jobs` endpoint requires a WorkOS access token) |
 | Frontend (Next.js + shadcn dashboard) | dark theme. `/` is an overview: counts that double as filters (all, needs attention, in progress, conforming, awaiting decision), search, sort by priority, and one row per run with its outcome, verdict counts and live progress. `/runs/[id]` is the report (with an Activity tab of the steps), a link to open the CoA, and a decision panel: approve, put on hold or reject, as one of two demo reviewers, with a reason. Upload with the button or by dropping PDFs anywhere; runs come back after a reload |
 
 The plant limits in `backend/docs/erp_demo.json` are **placeholder values**, not real plant data.
@@ -172,7 +172,12 @@ The model is reached through [OpenRouter](https://openrouter.ai/) (`openai/gpt-5
 
 ```
 OPENROUTER_API_KEY=your-openrouter-api-key-here
+WORKOS_CLIENT_ID=client_...   # the same client id as the frontend's; the API only accepts tokens signed for it
 ```
+
+The API needs a signed-in person for everything under `/jobs`: the frontend sends the WorkOS access token as
+`Authorization: Bearer ...` and the API checks it against WorkOS's public keys. Without `WORKOS_CLIENT_ID` it answers 503
+instead of running open. `/health` needs no token, so `curl` the jobs endpoints below with a token from a signed-in session.
 
 Run the agent on the sample CoA, or on another PDF:
 

@@ -7,7 +7,7 @@ import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { DecisionPanel } from "@/components/decision-panel";
-import { fetchReport, pdfUrl, type Run, useReport } from "@/components/report-context";
+import { fetchReport, openPdf, type Run, useReport } from "@/components/report-context";
 import { RunProgress } from "@/components/run-progress";
 import { DecisionChip, StatusChip } from "@/components/status-chip";
 import { Steps } from "@/components/steps";
@@ -100,6 +100,31 @@ function Neighbours({ runs, id }: { runs: Run[]; id: string }) {
   );
 }
 
+// the certificate needs the access token, so it is opened by a click handler instead of a link; a refusal is shown beside the button
+function OpenPdfButton({ id }: { id: string }) {
+  const [error, setError] = useState<string>();
+  return (
+    <>
+      {error ? (
+        <span role="alert" className="text-sm text-destructive">
+          {error}
+        </span>
+      ) : null}
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => {
+          setError(undefined);
+          openPdf(id).catch((reason) => setError(reason instanceof Error ? reason.message : "the certificate could not be opened"));
+        }}
+      >
+        <FileText />
+        Open the CoA
+      </Button>
+    </>
+  );
+}
+
 export function RunPage() {
   const { id } = useParams<{ id: string }>();
   const { runs, loaded } = useReport();
@@ -145,12 +170,7 @@ export function RunPage() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          {run.hasPdf && (
-            <Button variant="outline" size="sm" render={<a href={pdfUrl(run.id)} target="_blank" rel="noreferrer" />} nativeButton={false}>
-              <FileText />
-              Open the CoA
-            </Button>
-          )}
+          {run.hasPdf && <OpenPdfButton id={run.id} />}
           <Neighbours runs={runs} id={run.id} />
         </div>
       </div>

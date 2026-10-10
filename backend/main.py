@@ -6,13 +6,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import BaseModel
 
 from agent.agent import graph
+from auth import require_user
 from jobs import Jobs
 
 logger = logging.getLogger(__name__)
@@ -79,7 +80,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 # local development: the Next.js dev server calls this API straight from the browser (CORS_ORIGINS: comma-separated, to allow another)
 origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST"])
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST"], allow_headers=["Authorization"])
 
 
 @app.get("/health")
@@ -87,7 +88,11 @@ async def health():
     return {"status": "ok"}
 
 
-@app.post("/jobs", status_code=202)
+# everything about jobs needs a signed-in person; /health stays open for whatever watches the server
+router = APIRouter(dependencies=[Depends(require_user)])
+
+
+@router.post("/jobs", status_code=202)
 def create_job(file: UploadFile):
     """Queue the agent to analyze an uploaded CoA PDF. Poll GET /jobs/{id} for its progress and result."""
     job_id = store.create(file.filename or "document.pdf", file.file)
@@ -96,13 +101,13 @@ def create_job(file: UploadFile):
     return job
 
 
-@app.get("/jobs")
+@router.get("/jobs")
 def list_jobs():
     """Every job, oldest first, with the statuses its nodes reported; the report itself is in GET /jobs/{id}."""
     return store.all()
 
 
-@app.get("/jobs/{job_id}")
+@router.get("/jobs/{job_id}")
 def get_job(job_id: str):
     """One job: its status (queued, running, done or error), the node statuses so far, and `ui_spec` once it is done."""
     job = store.get(job_id)
@@ -111,7 +116,7 @@ def get_job(job_id: str):
     return job
 
 
-@app.get("/jobs/{job_id}/pdf")
+@router.get("/jobs/{job_id}/pdf")
 def get_pdf(job_id: str):
     """The uploaded certificate, to open next to its report."""
     job = store.get(job_id, with_spec=False)
@@ -126,7 +131,7 @@ class Decision(BaseModel):
     reason: str = ""
 
 
-@app.post("/jobs/{job_id}/decision")
+@router.post("/jobs/{job_id}/decision")
 def decide_job(job_id: str, body: Decision):
     """Record a person's decision on a finished analysis: approved, rejected or on_hold.
 
@@ -147,3 +152,6 @@ def decide_job(job_id: str, body: Decision):
     if not store.decide(job_id, body.decision, by, reason):
         raise HTTPException(status_code=409, detail="this lot already has a final decision")
     return store.get(job_id, with_spec=False)
+
+
+app.include_router(router)

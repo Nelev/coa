@@ -2,6 +2,7 @@
 
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
 
+import { accessToken, forgetAccessToken } from "@/lib/access-token";
 import { isActive } from "@/lib/runs";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -93,11 +94,25 @@ function toRun(job: Job, previous?: Run): Run {
   return unchanged ? previous : run;
 }
 
-// an error says what the server said (its `detail`), or at least its status
-async function request(path: string, init?: RequestInit): Promise<Response> {
-  const response = await fetch(`${API_URL}${path}`, init).catch(() => {
+// every request carries the access token of the signed-in person; a 401 means it went stale, so it is asked for again once
+async function send(path: string, init?: RequestInit): Promise<Response> {
+  const token = await accessToken().catch(() => {
+    throw new Error("the session could not be refreshed, reload the page to sign in again");
+  });
+  const headers = new Headers(init?.headers);
+  headers.set("Authorization", `Bearer ${token}`);
+  return fetch(`${API_URL}${path}`, { ...init, headers }).catch(() => {
     throw new Error("the server cannot be reached");
   });
+}
+
+// an error says what the server said (its `detail`), or at least its status
+async function request(path: string, init?: RequestInit): Promise<Response> {
+  let response = await send(path, init);
+  if (response.status === 401) {
+    forgetAccessToken();
+    response = await send(path, init);
+  }
   if (!response.ok) {
     const detail = await response.json().then(
       (body) => body.detail,
@@ -108,8 +123,27 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   return response;
 }
 
-// where the uploaded certificate of a run can be opened
-export const pdfUrl = (id: string) => `${API_URL}/jobs/${id}/pdf`;
+// the blob URL of each certificate opened so far: an upload never changes, so opening it again costs nothing
+const pdfs = new Map<string, string>();
+
+// Opens the uploaded certificate of a run in a new tab. A link cannot carry the access token, so the PDF is fetched with it and
+// shown from a blob. The tab is opened first, while the click still counts, and pointed at the blob when it arrives.
+export async function openPdf(id: string): Promise<void> {
+  const tab = window.open("", "_blank");
+  if (!tab) throw new Error("the browser blocked the new tab");
+  try {
+    let url = pdfs.get(id);
+    if (!url) {
+      const blob = await request(`/jobs/${id}/pdf`).then((response) => response.blob());
+      url = URL.createObjectURL(blob); // not revoked: a tab may be showing it
+      pdfs.set(id, url);
+    }
+    tab.location.href = url;
+  } catch (error) {
+    tab.close();
+    throw error;
+  }
+}
 
 function fetchJobs(): Promise<Job[]> {
   return request("/jobs").then((response) => response.json());
