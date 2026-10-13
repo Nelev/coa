@@ -29,6 +29,9 @@ ADDED_COLUMNS = {
     "decided_at": "INTEGER",
     "reason": "TEXT",
     "owner": "TEXT",
+    "input_tokens": "INTEGER",
+    "output_tokens": "INTEGER",
+    "cost_usd": "REAL",
 }
 # what a listing returns: everything but the (large) spec
 SUMMARY = "id, filename, status, statuses, error, started_at, " + ", ".join(ADDED_COLUMNS)
@@ -107,6 +110,16 @@ class Jobs:
 
     def add_status(self, job_id: str, text: str) -> None:
         self._execute("UPDATE jobs SET statuses = json_insert(statuses, '$[#]', ?) WHERE id = ?", (text, job_id))
+
+    def add_usage(self, job_id: str, input_tokens: int, output_tokens: int, cost: float | None) -> None:
+        """Add one model call's usage to the job's totals. Every call is added as it ends, so a run that a restart interrupted keeps
+        what its finished calls spent, and a call that runs again after the restart is counted again: it was paid for twice. A call the
+        restart killed midway never ends, so it is not counted. The cost stays unknown (None) until a call reports one."""
+        sql = (
+            "UPDATE jobs SET input_tokens = COALESCE(input_tokens, 0) + ?, output_tokens = COALESCE(output_tokens, 0) + ?, "
+            "cost_usd = CASE WHEN ? IS NULL THEN cost_usd ELSE COALESCE(cost_usd, 0) + ? END WHERE id = ?"
+        )
+        self._execute(sql, (input_tokens, output_tokens, cost, cost, job_id))
 
     def finish(self, job_id: str, ui_spec: dict, result: dict | None) -> None:
         sql = "UPDATE jobs SET status = 'done', ui_spec = ?, result = ?, finished_at = ? WHERE id = ?"
