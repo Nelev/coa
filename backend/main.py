@@ -16,6 +16,7 @@ from agent.agent import NON_CONFORMING, graph
 from auth import require_user
 from jobs import Jobs
 from notify import send_non_conforming_mail
+from usage import UsageRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,8 @@ def run_job(job_id: str) -> None:
     The job id is the agent's thread id: the checkpointer saves the run's state under it after every node, so a run
     that a restart interrupted continues after its last finished node instead of starting over.
     """
-    config = {"configurable": {"thread_id": job_id}}
+    # the recorder is in the run's config only: the checkpoint is found by the thread id alone
+    config = {"configurable": {"thread_id": job_id}, "callbacks": [UsageRecorder(store, job_id)]}
     try:
         resume = bool(agent_app.get_state(config).values)  # a checkpoint exists: continue after it (nothing runs if the run had finished)
         store.start(job_id, keep_statuses=resume)

@@ -1,7 +1,7 @@
 import type { Run } from "@/components/report-context";
 import { RunIcon } from "@/components/run-icon";
-import { formatDuration, formatMoment } from "@/lib/format";
-import { isActive } from "@/lib/runs";
+import { formatCost, formatDuration, formatMoment, formatTokens } from "@/lib/format";
+import { isActive, tokenUsage } from "@/lib/runs";
 import { cn } from "@/lib/utils";
 
 const STATE_WORDS: Record<Run["state"], string> = { queued: "waiting", loading: "in progress", done: "done", error: "failed" };
@@ -11,6 +11,7 @@ const STATE_WORDS: Record<Run["state"], string> = { queued: "waiting", loading: 
 export function Steps({ run }: { run: Run }) {
   const { statuses, state, startedAt, finishedAt } = run;
   const running = isActive(run);
+  const usage = tokenUsage(run);
   return (
     <div className="flex max-w-xl flex-col gap-6">
       {statuses.length === 0 ? (
@@ -47,6 +48,20 @@ export function Steps({ run }: { run: Run }) {
               <dd>{formatMoment(finishedAt)}</dd>
               <dt className="text-muted-foreground">Took</dt>
               <dd className="tabular-nums">{formatDuration(finishedAt - startedAt)}</dd>
+            </>
+          )}
+          {usage && (
+            <>
+              <dt className="text-muted-foreground">Tokens</dt>
+              <dd className="tabular-nums">
+                {formatTokens(usage.input)} in · {formatTokens(usage.output)} out
+              </dd>
+            </>
+          )}
+          {run.cost !== undefined && (
+            <>
+              <dt className="text-muted-foreground">Cost</dt>
+              <dd className="tabular-nums">{formatCost(run.cost)}</dd>
             </>
           )}
         </dl>
