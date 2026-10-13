@@ -130,11 +130,6 @@ export function tally(runs: Run[]): Tally {
   return counts;
 }
 
-// the tokens a run used, or nothing while no model call has reported them (the server adds both together)
-export function tokenUsage({ inputTokens, outputTokens }: Run): { input: number; output: number } | undefined {
-  return inputTokens === undefined || outputTokens === undefined ? undefined : { input: inputTokens, output: outputTokens };
-}
-
 export function totalTests({ counts }: NonNullable<Run["result"]>): number {
   return counts.pass + counts.fail + counts.review;
 }

@@ -5,8 +5,8 @@ import { preloadReport, type Run } from "@/components/report-context";
 import { RunProgress } from "@/components/run-progress";
 import { DecisionChip, StatusChip } from "@/components/status-chip";
 import { Button } from "@/components/ui/button";
-import { formatCost, formatDuration, formatTokens, relativeTime } from "@/lib/format";
-import { isActive, tokenUsage, totalTests } from "@/lib/runs";
+import { formatDuration, relativeTime } from "@/lib/format";
+import { isActive, totalTests } from "@/lib/runs";
 import { cn } from "@/lib/utils";
 
 // "Citric Acid · Lot L26-09-3315 · Alpina Chemicals", with the parts that exist
@@ -62,7 +62,7 @@ const CELL = "border-b px-4 py-3 align-middle group-last/row:border-b-0 group-da
 
 // One run, a row of the table. The file name is the link, and its ::after covers the whole row, so the row is one big target for the
 // pointer while a screen reader meets one link (not four) and the keyboard stops once per row. On a narrow screen (`wide` is false) the
-// "Result", "Duration", "Cost" and "Updated" columns are not there and their content goes under the file name; only the one layout that is shown is mounted.
+// "Result", "Duration" and "Updated" columns are not there and their content goes under the file name; only the one layout that is shown is mounted.
 export function RunRow({
   run,
   now,
@@ -81,9 +81,6 @@ export function RunRow({
   const when = run.finishedAt || run.startedAt;
   const time = when ? relativeTime(when, now) : "";
   const took = run.startedAt > 0 && run.finishedAt >= run.startedAt ? formatDuration(run.finishedAt - run.startedAt) : ""; // only a run that has ended
-  const usage = tokenUsage(run);
-  const tokens = usage ? `${formatTokens(usage.input + usage.output)} tokens` : "";
-  const cost = run.cost !== undefined ? formatCost(run.cost) : "";
   const filename = "block truncate text-sm font-medium";
   const outcome = <Outcome run={run} onRetry={onRetry} onDismiss={onDismiss} />;
   return (
@@ -116,8 +113,9 @@ export function RunRow({
           <div className="mt-1.5 flex flex-col gap-1">
             {outcome}
             {time && (
-              <p className="text-xs text-subtle-foreground tabular-nums">
-                {[time, took && `took ${took}`, cost, tokens].filter(Boolean).join(" · ")}
+              <p className="text-xs text-subtle-foreground">
+                {time}
+                {took && <span className="tabular-nums"> · took {took}</span>}
               </p>
             )}
           </div>
@@ -127,10 +125,6 @@ export function RunRow({
         <>
           <td className={CELL}>{outcome}</td>
           <td className={cn(CELL, "text-right text-xs whitespace-nowrap text-subtle-foreground tabular-nums")}>{took}</td>
-          <td className={cn(CELL, "text-right text-xs whitespace-nowrap tabular-nums")}>
-            <p className="text-muted-foreground">{cost}</p>
-            <p className="text-subtle-foreground">{tokens}</p>
-          </td>
           <td className={CELL}>
             <div className="flex items-center justify-end gap-2 text-xs whitespace-nowrap text-subtle-foreground">
               {time}
