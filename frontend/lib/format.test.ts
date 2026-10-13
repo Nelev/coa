@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCost, formatDuration, formatTokens, relativeTime } from "@/lib/format";
+import { formatDuration, relativeTime } from "@/lib/format";
 
 describe("formatDuration", () => {
   it.each([
@@ -8,26 +8,6 @@ describe("formatDuration", () => {
     [42000, "42.0s"],
     [65000, "1m 05s"],
   ])("%ims is %s", (ms, text) => expect(formatDuration(ms)).toBe(text));
-});
-
-describe("formatTokens", () => {
-  it.each([
-    [0, "0"],
-    [842, "842"],
-    [12_400, "12.4k"],
-    [1_250_000, "1.3M"],
-  ])("%i is %s", (count, text) => expect(formatTokens(count)).toBe(text));
-});
-
-describe("formatCost", () => {
-  it.each([
-    [0, "$0.00"],
-    [0.00002, "<$0.0001"],
-    [0.000172, "$0.0002"],
-    [0.0031, "$0.0031"],
-    [0.0149, "$0.01"],
-    [0.12, "$0.12"],
-  ])("%d is %s", (usd, text) => expect(formatCost(usd)).toBe(text));
 });
 
 describe("relativeTime", () => {

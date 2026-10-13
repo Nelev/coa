@@ -14,7 +14,6 @@ import main
 from agent.agent import DOCS_DIR, graph
 from jobs import Jobs
 from schema.schema import DocumentCheck
-from usage import UsageRecorder
 
 RESULT = {
     "outcome": "Conforming",
@@ -107,9 +106,10 @@ def test_a_job_records_the_status_of_each_node_then_the_ui_spec(start_app, monke
     assert job["ui_spec"] == SPEC
     assert job["result"] == RESULT
     assert job["started_at"] <= job["finished_at"]
-    inputs, config = agent.calls[0]
-    assert inputs == {"document_path": seen["path"]}
-    assert config["configurable"] == {"thread_id": created["id"]}  # the job id is the thread id
+    assert agent.calls[0] == (
+        {"document_path": seen["path"]},
+        {"configurable": {"thread_id": created["id"]}},
+    )  # the job id is the thread id
     assert seen["bytes"] == b"%PDF-fake"
     assert Path(seen["path"]).read_bytes() == b"%PDF-fake"  # the certificate is kept: it is the record the decision is about
 
@@ -238,23 +238,6 @@ def test_at_most_the_configured_number_of_jobs_run_at_once(start_app, monkeypatc
     ids = [submit(client)["id"] for _ in range(5)]
     assert {wait_for_end(client, job_id)["status"] for job_id in ids} == {"done"}
     assert most == 2
-
-
-def test_a_job_lists_what_its_run_used(start_app, monkeypatch, llm_result):
-    class SpendingAgent(FakeAgent):
-        def play(self, inputs):
-            callbacks = self.calls[-1][1]["callbacks"]  # what a model call inside the graph would reach
-            recorder = next(c for c in callbacks if isinstance(c, UsageRecorder))
-            recorder.on_llm_end(llm_result(100, 20, 0.001))
-            recorder.on_llm_end(llm_result(40, 10, 0.0004))
-            yield {"status": "Reading the PDF"}
-
-    client = start_app()
-    monkeypatch.setattr(main, "agent_app", SpendingAgent())
-    job_id = wait_for_end(client, submit(client)["id"])["id"]
-
-    listed = next(job for job in client.get("/jobs").json() if job["id"] == job_id)
-    assert (listed["input_tokens"], listed["output_tokens"], listed["cost_usd"]) == (140, 30, 0.0014)
 
 
 def test_an_unknown_job_is_a_404(start_app):
