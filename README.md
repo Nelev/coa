@@ -12,10 +12,11 @@ and checks the reported results against the **plant's own specification** for th
 | Structured extraction of the CoA (LLM) | done |
 | Comparison against plant specs (LLM) → `issues` | done |
 | Report page: model lays out the results as a json-render UI spec, rendered by the frontend | done |
-| `report` node (prose summary of the issues) | not started |
 | Pause / resume (`is_running`, `is_paused`) | state fields only, not wired |
-| API: `POST /jobs` queues the agent on an uploaded PDF; `GET /jobs` and `GET /jobs/{id}` return the progress and the UI spec; `GET /jobs/{id}/pdf` returns the certificate; `POST /jobs/{id}/decision` records a person's decision | done (jobs are kept in SQLite and survive restarts; CORS allows `http://localhost:3000` unless `CORS_ORIGINS` (comma-separated) says otherwise; every `/jobs` endpoint requires a WorkOS access token) |
-| Frontend (Next.js + shadcn dashboard) | light, dark or system theme (user menu). `/login` is the front door: a card that continues to WorkOS sign-in, over an animated pharmaceutical line (vials scanned and tagged PASS, REVIEW or FAIL, and drifting molecules; still for reduced motion), and signed-out visitors are sent there with the page they asked for. `/` is an overview: counts that double as filters (all, needs attention, in progress, conforming, awaiting decision), search, and a table you can sort by its headers, with live progress per run; the filter and sort are in the address, and `j`/`k`, `/` and `?` work from the keyboard. `/runs/[id]` opens with the lot, the verdict and a bar of the test results, then the report (with an Activity tab of the steps, and links to each finding), a link to open the CoA, and the decision: approve, put on hold or reject, as one of two demo reviewers, with a reason, in a column beside the report (a bottom sheet on a phone); rejecting, holding or overriding the agent asks for confirmation first, and toasts say what was recorded. Upload with the button or by dropping PDFs anywhere; runs come back after a reload |
+| Plant checks beyond the test table (`approved_suppliers`, `min_remaining_shelf_life_days` in the ERP data) | **not checked**: the data is there, nothing reads it (see [Known limitations](#known-limitations)) |
+| Mail when a lot is non-conforming | done (SMTP; a failure is logged as a warning and never fails the job) |
+| API: `POST /jobs` queues the agent on an uploaded PDF; `GET /jobs` and `GET /jobs/{id}` return the progress and the UI spec; `GET /jobs/{id}/pdf` returns the certificate; `POST /jobs/{id}/decision` records a person's decision | done (jobs are kept in SQLite and survive restarts; CORS allows `http://localhost:3000` unless `CORS_ORIGINS` (comma-separated) says otherwise; every `/jobs` endpoint requires a WorkOS access token, but any signed-in person can see and decide every job) |
+| Frontend (Next.js + shadcn dashboard) | WorkOS AuthKit sign-in; light, dark or system theme (user menu). `/login` is the front door: a card that continues to WorkOS sign-in, over an animated pharmaceutical line (vials scanned and tagged PASS, REVIEW or FAIL, and drifting molecules; still for reduced motion), and signed-out visitors are sent there with the page they asked for. `/` is an overview: counts that double as filters (all, needs attention, in progress, conforming, awaiting decision), search, and a table you can sort by its headers, with live progress per run; the filter and sort are in the address, and `j`/`k`, `/` and `?` work from the keyboard. `/runs/[id]` opens with the lot, the verdict and a bar of the test results, then the report (with an Activity tab of the steps, and links to each finding), a link to open the CoA, and the decision: approve, put on hold or reject, as one of two demo reviewers, with a reason, in a column beside the report (a bottom sheet on a phone); rejecting, holding or overriding the agent asks for confirmation first, and toasts say what was recorded. Upload with the button or by dropping PDFs anywhere; runs come back after a reload |
 
 The plant limits in `backend/docs/erp_demo.json` are **placeholder values**, not real plant data.
 
@@ -36,7 +37,7 @@ START → load_document → validate_document ─┬→ get_document_data → lo
 | `get_document_data` | yes | Extracts the CoA into a structured schema: header (certificate, product, lot, dates, PO, quantities), one row per test (specification, method, result, unit, supplier status) and the conclusion. The prompt asks for verbatim values and `null` for anything not stated. |
 | `load_plant_spec` | no | Looks up the CoA's `product_code` in the ERP's material master (`docs/erp_demo.json`). If there is no entry, it records a `missing_plant_spec` issue and the graph ends without calling the model. |
 | `compare_specs` | yes | Sends the plant requirements and the CoA results (`test`, `result`, `unit` only, so the supplier's own limits and pass/fail can't bias the judgement) to the model with a dedicated prompt. It returns one verdict per plant test: `pass`, `fail` or `review`. |
-| `render_ui` | yes | Last node. Sends the header, the per-test verdicts and the issues to the model with a prompt that lists the available components (Stack, Grid, Card, Separator, Heading, Text, Badge, Alert, Table) and how to lay out the page. The reply is a [json-render](https://github.com/vercel-labs/json-render) spec stored in `ui_spec`. Invalid JSON is retried once, then replaced by an error Alert. For a document that is not a CoA it skips the model and returns a fixed error Alert. |
+| `render_ui` | yes | Last node. Sends the header, the per-test verdicts and the issues to the model with a prompt that lists the available components (Stack, Grid, Card, Separator, Collapsible, Accordion, Heading, Text, Badge, Alert, Progress, Table) and how to lay out the page. The reply is a [json-render](https://github.com/vercel-labs/json-render) spec stored in `ui_spec`. Invalid JSON is retried once, then replaced by an error Alert. For a document that is not a CoA it skips the model and returns a fixed error Alert. |
 
 Rules in the comparison prompt: judge against the plant requirements only; limits are inclusive; a `< x`
 result passes a `max` limit only if x ≤ max and can't be confirmed against a `min` limit; a unit mismatch is
@@ -67,7 +68,9 @@ test missing from the CoA is `fail` ("not reported").
 | `test_checks` | one verdict per plant test, with the supplier result and plant requirement |
 | `issues` | non-passing checks and missing-spec problems (see `schema.Issue`) |
 | `ui_spec` | json-render spec of the report page |
-| `messages`, `is_running`, `is_paused`, `report` | present but not used yet |
+| `messages` | `write_summary` puts the analysis (outcome, counts, header, tests, issues) here as compact JSON; `render_ui` reads it |
+| `result` | what the job list shows: outcome, verdict counts, product, lot, supplier (written by `write_summary`, or by `render_ui` for a non-CoA) |
+| `is_running`, `is_paused`, `report` | present but not used yet |
 
 ## The report UI (json-render)
 
@@ -96,11 +99,11 @@ How the pieces fit:
 
 | Step | Where | What happens |
 |---|---|---|
-| 1. Prompt | `RENDER_UI_PROMPT` in `backend/agent/prompts.py` | Lists the available components and their props (Stack, Grid, Card, Separator, Heading, Text, Badge, Alert, Table) and says how to build the page: outcome badge and recommendation, certificate card, findings as Alerts (critical first), the results table, and a "not assessed" note. The model gets only the header, the per-test verdicts and the issues, and must copy values exactly. |
+| 1. Prompt | `RENDER_UI_PROMPT` in `backend/agent/prompts.py` | Lists the available components and their props (the twelve in the table above) and says how to build the page: outcome badge and recommendation, certificate card, findings as Alerts (critical first), the results table, and a "not assessed" note. The model gets only the header, the per-test verdicts and the issues, and must copy values exactly. |
 | 2. Node | `render_ui` in `backend/agent/agent.py` | Sends the prompt, parses the JSON reply (fenced or not) and stores it as `ui_spec`. Invalid replies are retried once with the error, then replaced by an error Alert. |
 | 3. API | `POST /jobs` in `backend/main.py` | Queues the whole graph for an uploaded PDF; a worker runs it, records what each node is doing, then the `ui_spec`. |
 | 4. Upload | `frontend/components/upload-button.tsx`, `report-context.tsx` | The **Upload documents** button (or a drop anywhere on the page) posts each PDF to the API, which queues them, and polls the jobs once a second while any is unfinished. There is one run per file (queued, loading, error, done). |
-| 5. Render | `frontend/components/report-renderer.tsx` | Validates the spec against the catalog (the same nine components, taken from `@json-render/shadcn`) and renders it inside the page's `<main>`. An invalid spec shows an error message instead of rendering. |
+| 5. Render | `frontend/components/report-renderer.tsx` | Validates the spec against the catalog (the same twelve components, taken from `@json-render/shadcn`) and renders it inside the page's `<main>`. An invalid spec shows an error message instead of rendering. |
 
 The renderer (json-render, the shadcn components and zod) is loaded on demand with `next/dynamic` and preloaded when an
 upload starts, so the idle page does not download it.
@@ -129,14 +132,19 @@ backend/
   erp.py            the demo ERP: the material master, read from docs/erp_demo.json
   docs/             sample CoAs and the demo ERP data
     sample_coa_citric_acid.pdf    conforming CoA (should produce no issues)
+    sample_coa_citric_acid_3pages.pdf  the same kind of conforming CoA over three pages, for bigger documents
     sample_coa_defective.pdf      CoA with five seeded defects
     erp_demo.json                 materials with their plant requirements
   scripts/eval_compare.py         end-to-end check against the real model
-  tests/                          unit tests (mocked model)
-  main.py                         FastAPI app: /health, POST /jobs, GET /jobs and GET /jobs/{id}, plus the job queue and its workers
+  tests/                          unit tests (mocked model): API and queue, sign-in, comparison, validation, mail
+  main.py                         FastAPI app: /health, the /jobs endpoints (create, list, get, pdf, decision), plus the job queue and its workers
+  auth.py                         checks the WorkOS access token on every /jobs request
+  notify.py                       the mail sent when a lot is non-conforming (SMTP)
   jobs.py                         the jobs table (SQLite, with the decisions) and the uploaded PDFs; data lives in backend/data/ (gitignored)
-frontend/           Next.js + shadcn dashboard, dark only (tokens in app/globals.css, contrast checked by lib/contrast.test.ts)
-  app/page.tsx                     the overview; app/runs/[id]/page.tsx is the report page
+frontend/           Next.js + shadcn dashboard, light / dark / system theme (tokens in app/globals.css, contrast checked by lib/contrast.test.ts)
+  proxy.ts                         signs people in with WorkOS AuthKit; signed-out visitors go to /login
+  app/(auth)/login/page.tsx        the login page; app/auth/ and app/sign-in/ hold the sign-in, callback, sign-out and token actions
+  app/(app)/page.tsx               the overview; app/(app)/runs/[id]/page.tsx is the report page
   components/upload-button.tsx     picks one or more PDFs and sends them to the API
   components/report-context.tsx    the list of runs (queued / loading / error / done), the jobs polled from the API, and the POST /jobs calls
   components/overview.tsx          filter tiles, search and sort, the list of rows, empty / offline states, j / k keys
@@ -145,6 +153,7 @@ frontend/           Next.js + shadcn dashboard, dark only (tokens in app/globals
   components/decision-panel.tsx    approve / hold / reject a finished run, as one of the demo reviewers, with a reason
   components/page-dropzone.tsx     drop PDFs anywhere; components/live-announcer.tsx tells screen readers when a run ends
   lib/runs.ts                      filter, search, priority sort and tallies of the runs
+  lib/access-token.ts              the session's access token for the API, cached until shortly before it expires
   components/report-renderer.tsx   json-render catalog + registry (shadcn components)
 ```
 
@@ -156,6 +165,10 @@ frontend/           Next.js + shadcn dashboard, dark only (tokens in app/globals
 
 - numeric test: `{"test": "Water (Karl Fischer)", "type": "numeric", "max": 0.4, "unit": "%"}` (`min` and/or `max`)
 - qualitative test: `{"test": "Appearance", "type": "qualitative", "accepted": ["conforms", "complies"], "requirement": "..."}`
+
+Only `tests` is used. A material also carries `specification_ref`, `approved_suppliers` and `min_remaining_shelf_life_days`,
+which are **not checked yet**: changing them has no effect on a verdict, and a CoA from a supplier that is not approved, or
+with too little shelf life left, is not flagged.
 
 ## Running it
 
@@ -195,8 +208,31 @@ NOTIFY_EMAIL=you@example.com   # who gets the mails
 APP_URL=http://localhost:3000  # optional: where the frontend is served; the mails then link to the job's page
 ```
 
-Leave `SMTP_USER` out to send without encryption or login, e.g. to a local mail catcher on `127.0.0.1:1025`. A mail that
-cannot be sent is logged: the job stays done and the worker keeps running. `.env` is loaded when the API starts, so restart it after changing it.
+Leave `SMTP_USER` out to send without encryption or login, e.g. to a local mail catcher on `127.0.0.1:1025`. `.env` is loaded
+when the API starts, so restart it after changing it.
+
+A mail that cannot be sent never fails the job: it stays done, the worker keeps running, and the API logs one warning:
+
+```
+WARNING main: job <id>: the non-conforming mail was not sent: SMTPAuthenticationError: (525, b'5.7.1 Unauthorized IP address')
+```
+
+That example is Brevo refusing a login from an IP that is not on its allow-list (*Security → Authorized IPs*); a server needs
+its own address added there. To check the settings without sending anything, connect, `starttls()` and `login()` with
+`smtplib` using the values from `.env`.
+
+Every setting, for reference (the backend reads the environment and `backend/.env`; the frontend reads `frontend/.env.local`):
+
+| Variable | Where | Meaning |
+|---|---|---|
+| `OPENROUTER_API_KEY` | backend | required: the model is reached through OpenRouter |
+| `WORKOS_CLIENT_ID` | backend, frontend | required: the same value in both; without it the API answers 503 |
+| `MAX_CONCURRENT_RUNS` | backend | worker threads, default 2 |
+| `JOBS_DIR` | backend | where `jobs.db`, `checkpoints.db` and `uploads/` live, default `backend/data/` |
+| `CORS_ORIGINS` | backend | allowed browser origins, comma-separated, default `http://localhost:3000` |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `NOTIFY_EMAIL`, `APP_URL` | backend | the non-conforming mail, see above |
+| `WORKOS_API_KEY`, `WORKOS_COOKIE_PASSWORD`, `NEXT_PUBLIC_WORKOS_REDIRECT_URI` | frontend | WorkOS AuthKit (the cookie password is 32+ characters) |
+| `NEXT_PUBLIC_API_URL` | frontend | the API's address, default `http://localhost:8000` |
 
 Run the agent on the sample CoA, or on another PDF:
 
@@ -269,7 +305,7 @@ The agent only prepares the report; a person decides. `POST /jobs/{id}/decision`
 
 - A `reason` is required to reject or hold, and to approve a lot the agent did not find conforming (an override).
 - `approved` and `rejected` are final (`409` afterwards); a lot `on_hold` can be decided again, and the new decision replaces the hold.
-- Only a finished job can be decided (`409` before), and `by` is whatever the caller says: the demo has no login, no e-signature and no audit trail.
+- Only a finished job can be decided (`409` before). The caller must be signed in, but `by` is whatever the caller says (the frontend offers two demo reviewers) and is not tied to the signed-in person: there is no e-signature and no audit trail, and a later decision replaces an earlier hold.
 
 Frontend:
 
@@ -277,7 +313,7 @@ Frontend:
 cd frontend && npm install && npm run dev
 ```
 
-Start the backend (see above) and the frontend, then click **Upload documents** and pick a CoA PDF
+Sign in with WorkOS first: the frontend needs the `frontend/.env.local` variables above. Start the backend (see above) and the frontend, then click **Upload documents** and pick a CoA PDF
 (for example `backend/docs/sample_coa_defective.pdf`). The report appears in the page after about a minute. The
 frontend calls `http://localhost:8000`; set `NEXT_PUBLIC_API_URL` to use another address.
 
@@ -292,9 +328,11 @@ cd backend
 .venv/bin/python -m scripts.eval_compare   # calls the real model on both sample CoAs, diffs the verdicts
 ```
 
-The unit tests cover issue derivation, the retry and the fallback to `review`, and the missing-spec routing.
+The unit tests cover issue derivation, the retry and the fallback to `review`, the missing-spec routing, the job queue and
+restart behaviour, decisions, sign-in, and the mail (including the warning when it cannot be sent). The frontend has Vitest
+tests for the components and helpers.
 The eval script is slower (several model calls) and needs `OPENROUTER_API_KEY`. It exits non-zero if any
-verdict differs from the expected one.
+verdict differs from the expected one. It covers the one-page conforming sample and the defective one, not the three-page sample.
 
 ## Continuous integration
 
@@ -316,5 +354,16 @@ its own folder changes. The same steps run locally:
 - Numeric comparison is done by the model. The retry and the eval script exist to guard it; doing the numeric
   tests in Python and sending only qualitative rows to the model is a possible next step.
 - Test names on the CoA must match the plant specification exactly; there is no fuzzy matching yet.
+- The ERP's `approved_suppliers` and `min_remaining_shelf_life_days` are never read, so an unapproved supplier or a lot with
+  too little shelf life left still comes out as conforming. Only the test table is compared.
+- Everything signed in sees everything: each job records its `owner`, but the API does not filter or check it, so any
+  signed-in person can list every job, open its PDF and decide it. `by` on a decision is free text, not the signed-in person.
+- An upload is not checked: no size limit, and no check that it is a PDF before a worker picks it up (a non-PDF becomes a failed job).
+- The queue is in memory and per process, and the API must run as one uvicorn worker. Jobs and uploads live in
+  `backend/data/` with no cleanup.
+- A failed mail is only a log line; nothing on the job or in the UI says that the notification was not sent.
+- Backend dependencies in `requirements.txt` are not pinned (only `PyJWT` has a floor), so installs are not reproducible.
+- `npm audit --omit=dev` reports 7 high-severity findings, all through `shadcn` (a CLI that is listed as a runtime
+  dependency, via `fast-glob` / `micromatch` / `braces`), not through code the app runs.
 - The report UI is written by the model, so values in it are retyped by the model. The verdicts and issues stay in state
   from `compare_specs`; the page is a display layer. The frontend validates the spec against its catalog before rendering.
