@@ -203,7 +203,7 @@ def test_a_job_that_fails_is_not_mailed(start_app, monkeypatch):
     assert main.store.get(job_id)["status"] == "error" and mails == []
 
 
-def test_a_mail_that_cannot_be_sent_leaves_the_job_done(start_app, monkeypatch):
+def test_a_mail_that_cannot_be_sent_leaves_the_job_done_and_logs_a_warning(start_app, monkeypatch, caplog):
     start_app()
 
     def broken(job):
@@ -211,11 +211,13 @@ def test_a_mail_that_cannot_be_sent_leaves_the_job_done(start_app, monkeypatch):
 
     monkeypatch.setattr(main, "send_non_conforming_mail", broken)
 
-    with pytest.raises(OSError):  # it reaches the worker, which logs it and takes the next job
-        run_to_the_end(monkeypatch, "Non-conforming")
+    job_id = run_to_the_end(monkeypatch, "Non-conforming")
 
-    job = main.store.all()[-1]
+    job = main.store.get(job_id)
     assert job["status"] == "done" and job["error"] is None
+    assert [(r.levelname, r.getMessage()) for r in caplog.records if r.name == "main"] == [
+        ("WARNING", f"job {job_id}: the non-conforming mail was not sent: OSError: mail server down")
+    ]
 
 
 def test_at_most_the_configured_number_of_jobs_run_at_once(start_app, monkeypatch):

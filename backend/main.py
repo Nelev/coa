@@ -46,9 +46,12 @@ def run_job(job_id: str) -> None:
         store.finish(job_id, values["ui_spec"], values.get("result"))
     except Exception as error:
         store.fail(job_id, str(error) or type(error).__name__)
-    else:  # outside the try: a mail that cannot be sent must not turn a finished job into a failed one (the worker logs it)
+    else:  # outside the try: a mail that cannot be sent must not turn a finished job into a failed one
         if (values.get("result") or {}).get("outcome") == NON_CONFORMING:
-            send_non_conforming_mail(store.get(job_id, with_spec=False))
+            try:
+                send_non_conforming_mail(store.get(job_id, with_spec=False))
+            except Exception as error:
+                logger.warning("job %s: the non-conforming mail was not sent: %s: %s", job_id, type(error).__name__, error)
 
 
 def worker() -> None:
