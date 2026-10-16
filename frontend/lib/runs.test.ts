@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { Outcome, Run } from "@/components/report-context";
-import { awaitingDecision, filterOf, matchesQuery, nextSort, parseFilter, parseSort, requiresReason, sortRuns, tally, visibleRuns } from "@/lib/runs";
+import {
+  awaitingDecision,
+  filterOf,
+  isActive,
+  matchesQuery,
+  nextSort,
+  parseFilter,
+  parseSort,
+  requiresReason,
+  sortRuns,
+  tally,
+  visibleRuns,
+} from "@/lib/runs";
 
 function run(id: string, state: Run["state"], outcome?: Outcome, extra: Partial<Run> = {}): Run {
   const result = outcome && { outcome, counts: { pass: 1, fail: 0, review: 0 }, product: "Citric Acid", lot: `L-${id}`, supplier: "Alpina" };
@@ -21,6 +33,18 @@ const RUNS = [
 describe("filterOf", () => {
   it("groups the runs by what the user has to do", () => {
     expect(RUNS.map(filterOf)).toEqual(["conforming", "attention", "attention", "attention", "progress", "progress", "attention"]);
+  });
+});
+
+describe("a run waiting for a person's answer", () => {
+  const asking = run("asking", "waiting");
+
+  it("needs attention, is not still running, and has nothing to decide yet", () => {
+    expect([filterOf(asking), isActive(asking), awaitingDecision(asking)]).toEqual(["attention", false, false]);
+  });
+
+  it("comes first: the run is stopped until someone answers", () => {
+    expect(sortRuns([...RUNS, asking], "priority").map((r) => r.id)[0]).toBe("asking");
   });
 });
 

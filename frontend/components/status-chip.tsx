@@ -1,4 +1,16 @@
-import { CircleCheck, CirclePause, CircleX, Clock, FileText, FileX, Loader2, ShieldCheck, ShieldX, TriangleAlert } from "lucide-react";
+import {
+  CircleCheck,
+  CirclePause,
+  CircleQuestionMark,
+  CircleX,
+  Clock,
+  FileText,
+  FileX,
+  Loader2,
+  ShieldCheck,
+  ShieldX,
+  TriangleAlert,
+} from "lucide-react";
 
 import type { Decision, Run } from "@/components/report-context";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +24,8 @@ function chipOf(run: Run): Chip {
       return { label: "Queued", variant: "secondary", icon: <Clock /> };
     case "loading":
       return { label: "Analyzing", variant: "info", icon: <Loader2 className="animate-spin motion-reduce:animate-none" /> };
+    case "waiting":
+      return { label: "Needs your answer", variant: "warning", icon: <CircleQuestionMark /> };
     case "error":
       return { label: "Failed", variant: "destructive", icon: <CircleX /> };
     case "done":

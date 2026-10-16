@@ -24,8 +24,15 @@ export type RunResult = {
   supplier: string | null;
 };
 
+// what a paused agent asks a person: one question per test it could not decide, with the figures to answer by
+export type Question = {
+  id: string;
+  questions: { test: string; question: string; supplier_result: string | null; plant_requirement: string | null }[];
+};
+
 // statuses: what the agent reported while it worked, in order; the last one is what it is doing now.
-// queued: waiting on the server for a free worker; error: `message` says why, `statuses` how far the agent got.
+// queued: waiting on the server for a free worker; waiting: the agent paused and `question` waits for a person's answer;
+// error: `message` says why, `statuses` how far the agent got.
 // startedAt / finishedAt: when the server started and ended the run, as Date.now() values (0 while that has not happened).
 // local: the run is not on the server (an upload that failed), so there is no report page for it.
 // inputTokens, outputTokens, cost: what the model calls of the run used, and what OpenRouter charged for them in US dollars; each is missing
@@ -34,11 +41,12 @@ export type RunResult = {
 export type Run = {
   id: string;
   filename: string;
-  state: "queued" | "loading" | "done" | "error";
+  state: "queued" | "loading" | "waiting" | "done" | "error";
   startedAt: number;
   finishedAt: number;
   statuses: string[];
   result?: RunResult;
+  question?: Question;
   message?: string;
   inputTokens?: number;
   outputTokens?: number;
@@ -55,7 +63,7 @@ export type Run = {
 export type Job = {
   id: string;
   filename: string;
-  status: "queued" | "running" | "done" | "error";
+  status: "queued" | "running" | "needs_input" | "done" | "error";
   statuses: string[];
   error: string | null;
   started_at: number | null;
@@ -64,6 +72,7 @@ export type Job = {
   output_tokens: number | null;
   cost_usd: number | null;
   result: RunResult | null;
+  question: Question | null;
   decision: Decision | null;
   decided_by: string | null;
   decided_at: number | null;
@@ -72,7 +81,7 @@ export type Job = {
   ui_spec?: unknown;
 };
 
-const STATES = { queued: "queued", running: "loading", done: "done", error: "error" } as const;
+const STATES = { queued: "queued", running: "loading", needs_input: "waiting", done: "done", error: "error" } as const;
 
 // a run that did not change keeps its object, so a poll that brings nothing new re-renders nothing
 function toRun(job: Job, previous?: Run): Run {
@@ -84,6 +93,7 @@ function toRun(job: Job, previous?: Run): Run {
     finishedAt: job.finished_at ?? 0,
     statuses: job.statuses,
     result: job.result ?? undefined,
+    question: job.question ?? undefined,
     message: job.error ?? undefined,
     inputTokens: job.input_tokens ?? undefined,
     outputTokens: job.output_tokens ?? undefined,
@@ -98,6 +108,7 @@ function toRun(job: Job, previous?: Run): Run {
     previous?.state === run.state &&
     previous.statuses.length === run.statuses.length &&
     previous.message === run.message &&
+    previous.question?.id === run.question?.id &&
     previous.startedAt === run.startedAt &&
     previous.finishedAt === run.finishedAt &&
     previous.inputTokens === run.inputTokens &&
@@ -216,6 +227,8 @@ const ReportContext = createContext<{
   dismissRun: (id: string) => void;
   // records a person's decision on a finished run; rejects with the server's reason when it refuses (a reason is missing, the lot was decided already)
   decide: (id: string, decision: Decision, by: string, reason: string) => Promise<void>;
+  // answers what a waiting run asks (by test name; a test left out stays a review) and queues it to continue; rejects with the server's reason
+  answer: (id: string, answers: Record<string, string>, by: string) => Promise<void>;
 } | null>(null);
 
 // Holds the runs shared by every page. The server queues and runs the jobs; this polls it for their progress while any is
@@ -319,14 +332,20 @@ export function ReportProvider({ children }: { children: ReactNode }) {
     void startUploads([file]);
   }
 
-  async function decide(id: string, decision: Decision, by: string, reason: string) {
-    const init = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision, by, reason }) };
-    const job = (await request(`/jobs/${id}/decision`, init).then((response) => response.json())) as Job;
-    setRuns((all) => all.map((run) => (run.id === id ? toRun(job, run) : run)));
+  // a person's input on a job (a decision, an answer): the server answers with the job as it is now
+  async function post(id: string, action: "decision" | "answer", body: object) {
+    const init = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+    const job = (await request(`/jobs/${id}/${action}`, init).then((response) => response.json())) as Job;
+    setRuns((all) => all.map((run) => (run.id === id ? toRun(job, run) : run))); // an answered run is queued again: active, so polling starts
   }
 
+  const decide = (id: string, decision: Decision, by: string, reason: string) => post(id, "decision", { decision, by, reason });
+  const answer = (id: string, answers: Record<string, string>, by: string) => post(id, "answer", { answers, by });
+
   return (
-    <ReportContext value={{ runs, running, loaded, offline, retry: async () => void (await refresh()), upload, retryUpload, dismissRun, decide }}>
+    <ReportContext
+      value={{ runs, running, loaded, offline, retry: async () => void (await refresh()), upload, retryUpload, dismissRun, decide, answer }}
+    >
       {children}
     </ReportContext>
   );

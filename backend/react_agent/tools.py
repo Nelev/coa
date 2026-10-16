@@ -7,6 +7,9 @@ answers with a message saying what to call first.
 load_plant_spec is the graph's load_plant_spec and save_plant_spec in one tool, so the model does not have to call a pair in order.
 notify_quality_team replaces send_email: told to mail only a non-conforming lot, the model mailed a conforming one in every live run,
 so the tool takes no arguments, builds the mail from the state and refuses any other outcome.
+compare_specs records a question for a review a person can settle (a result in another unit); resolve_questions asks it with
+interrupt() and judges those tests again with the answer. It is its own tool because a resumed run starts the interrupted tool over:
+the model calls of compare_specs must not run twice.
 """
 
 import json
@@ -22,7 +25,7 @@ from langchain_core.utils.json import parse_json_markdown
 from langchain_openai import ChatOpenAI
 from langgraph.config import get_stream_writer
 from langgraph.prebuilt import InjectedState
-from langgraph.types import Command
+from langgraph.types import Command, interrupt
 from pypdf import PdfReader
 
 import notify
@@ -150,6 +153,7 @@ def _summary(state: dict) -> dict:
         "header": state.get("supplier_materials", {}),
         "tests": [{k: c[k] for k in ("test", "verdict", "supplier_result", "plant_requirement")} for c in checks],
         "issues": issues,
+        "clarifications": state.get("clarifications", []),
     }
 
 
@@ -228,28 +232,28 @@ def load_plant_spec(state: State, tool_call_id: CallId) -> Command:
     return _reply({"plant_spec": material}, tool_call_id, "load_plant_spec", content)
 
 
-@tool
-def compare_specs(state: State, tool_call_id: CallId) -> Command:
-    """Compare each CoA result with the plant requirements and record a verdict (pass, fail or review) for every required test.
+def _coa_tests(tests: list[dict], only: set[str] | None = None) -> list[dict]:
+    """What the model may see of the CoA's results (not the supplier's own limits or pass/fail), of the tests in `only` if given."""
+    return [{k: t[k] for k in ("test", "result", "unit")} for t in tests if only is None or t["test"] in only]
 
-    Needs the plant specification: call it only after load_plant_spec found one.
-    """
-    _need(state, "plant_spec", "load_plant_spec")
-    _status("Comparing results with the specification")
-    plant_tests = state["plant_spec"]["tests"]
+
+def _judge(plant_tests: list[dict], coa_tests: list[dict], extra: str = "") -> tuple[dict[str, TestCheck], dict]:
+    """One verdict per plant test from the model, with one retry telling it what was wrong; `extra` is added to the prompt."""
     expected = {t["test"] for t in plant_tests}
-    coa_tests = [{k: t[k] for k in ("test", "result", "unit")} for t in state["tests"]]
-    prompt = COMPARE_PROMPT + "Plant requirements:\n" + _json(plant_tests) + "\n\nCoA results:\n" + _json(coa_tests)
-
+    prompt = COMPARE_PROMPT + "Plant requirements:\n" + _json(plant_tests) + "\n\nCoA results:\n" + _json(coa_tests) + extra
     checks, usage = _ask_checks(prompt)
-    if set(checks) != expected:  # one retry, telling the model what was wrong
+    if set(checks) != expected:
         checks, retry_usage = _ask_checks(
             prompt + f"\n\nYour previous answer did not match the plant tests (missing: {sorted(expected - set(checks))}; "
             f"unexpected: {sorted(set(checks) - expected)}). Return exactly one check per plant test, names verbatim."
         )
         usage = _sum_usage(usage, retry_usage)
+    return checks, usage
 
-    supplier_results = {t["test"]: _supplier_result(t) for t in state["tests"]}
+
+def _verdicts(plant_tests: list[dict], checks: dict[str, TestCheck], coa_tests: list[dict]) -> tuple[list[dict], list[dict]]:
+    """The test_checks and issues of `plant_tests`, from the model's checks and the CoA's results."""
+    supplier_results = {t["test"]: _supplier_result(t) for t in coa_tests}
     test_checks, issues = [], []
     for plant_test in plant_tests:
         name = plant_test["test"]
@@ -259,8 +263,75 @@ def compare_specs(state: State, tool_call_id: CallId) -> Command:
         if check.verdict != "pass":
             kind, severity = VERDICT_ISSUE[check.verdict]
             issues.append(_issue(kind=kind, severity=severity, message=check.reason, test=name, **details))
+    return test_checks, issues
+
+
+@tool
+def compare_specs(state: State, tool_call_id: CallId) -> Command:
+    """Compare each CoA result with the plant requirements and record a verdict (pass, fail or review) for every required test.
+
+    Needs the plant specification: call it only after load_plant_spec found one. When it reports open questions, call
+    resolve_questions next.
+    """
+    _need(state, "plant_spec", "load_plant_spec")
+    _status("Comparing results with the specification")
+    plant_tests = state["plant_spec"]["tests"]
+    coa_tests = _coa_tests(state["tests"])
+
+    checks, usage = _judge(plant_tests, coa_tests)
+    test_checks, issues = _verdicts(plant_tests, checks, coa_tests)
+    questions = [  # only a review can be settled by a person; a question on a pass or a fail is dropped
+        {k: c[k] for k in ("test", "question", "supplier_result", "plant_requirement")}
+        for c in test_checks
+        if c["verdict"] == "review" and c["question"]
+    ]
     content = f"Verdicts: {_json(_counts(test_checks))}. Issues raised: {len(issues)}."
-    return _reply({**usage, "test_checks": test_checks, "issues": issues}, tool_call_id, "compare_specs", content)
+    if questions:
+        content += f" Open questions for a person: {len(questions)}. Call resolve_questions."
+    update = {**usage, "test_checks": test_checks, "issues": issues, "open_questions": questions}
+    return _reply(update, tool_call_id, "compare_specs", content)
+
+
+@tool
+def resolve_questions(state: State, tool_call_id: CallId) -> Command:
+    """Ask a person the questions compare_specs could not settle (e.g. a result in another unit) and wait for their answers.
+
+    Call it once, right after compare_specs, and only when compare_specs reported open questions. The run pauses until a person
+    answers; the tests they answered are then judged again with the answer.
+    """
+    _need(state, "open_questions", "compare_specs")
+    questions = state["open_questions"]
+    if not questions:
+        return _reply({}, tool_call_id, "resolve_questions", "There are no open questions.")
+    # the first thing the tool does: a resumed run starts the tool over, and nothing before this line may cost a model call
+    reply = interrupt({"questions": questions})  # a person's reply: {"answers": {test: text}, "by": who}
+    answers, by = {test: text.strip() for test, text in reply["answers"].items() if text.strip()}, reply.get("by")
+    _status("Applying the answers")
+    answered = [q for q in questions if q["test"] in answers]  # a question left unanswered stays a review
+    if not answered:
+        return _reply({"open_questions": []}, tool_call_id, "resolve_questions", "No question was answered: the reviews stay.")
+
+    names = {q["test"] for q in answered}
+    plant_tests = [t for t in state["plant_spec"]["tests"] if t["test"] in names]
+    coa_tests = _coa_tests(state["tests"], names)
+    clarifications = [{"test": q["test"], "question": q["question"], "answer": answers[q["test"]], "by": by} for q in answered]
+    extra = "\n\nA person responsible for quality answered these questions about the results. Their answers are authoritative:\n" + _json(
+        [{k: c[k] for k in ("test", "question", "answer")} for c in clarifications]
+    )
+    checks, usage = _judge(plant_tests, coa_tests, extra)
+    rechecked, new_issues = _verdicts(plant_tests, checks, coa_tests)
+    by_test = {c["test"]: {**c, "question": None} for c in rechecked}
+    test_checks = [by_test.get(c["test"], c) for c in state["test_checks"]]
+    issues = [i for i in state.get("issues", []) if i.get("test") not in names] + new_issues
+    update = {
+        **usage,
+        "test_checks": test_checks,
+        "issues": issues,
+        "open_questions": [],
+        "clarifications": [*state.get("clarifications", []), *clarifications],
+    }
+    content = f"Answered: {len(answered)}. Verdicts now: {_json(_counts(test_checks))}. Issues: {len(issues)}."
+    return _reply(update, tool_call_id, "resolve_questions", content)
 
 
 @tool
@@ -268,8 +339,10 @@ def write_summary(state: State, tool_call_id: CallId) -> Command:
     """Work out the outcome (Conforming, Needs review or Non-conforming) from the findings so far.
 
     Call it when the checks are done, or when a missing specification means there is nothing to compare. render_ui builds the
-    report from the findings.
+    report from the findings. It waits for the open questions: call resolve_questions first when compare_specs reported any.
     """
+    if open_questions := state.get("open_questions"):
+        raise OutOfOrder(f"{len(open_questions)} question(s) for a person are still open: call resolve_questions first.")
     _status("Summarizing the findings")
     summary = _summary(state)
     result = _result(summary["outcome"], state.get("test_checks", []), summary["header"])
@@ -335,6 +408,7 @@ tools = [
     get_document_data,
     load_plant_spec,
     compare_specs,
+    resolve_questions,
     write_summary,
     render_ui,
     notify_quality_team,

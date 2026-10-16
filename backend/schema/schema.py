@@ -57,6 +57,9 @@ class TestCheck(BaseModel):
     test: str = Field(description="Test name exactly as written in the plant requirements")
     verdict: Literal["pass", "fail", "review"]
     reason: str = Field(description="One sentence quoting the CoA result and the plant requirement verbatim")
+    question: str | None = Field(
+        None, description="Only for a review that a person could settle with one answer (e.g. a different unit): the question to ask them"
+    )
 
 
 class ComparisonResult(BaseModel):

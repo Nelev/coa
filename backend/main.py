@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.types import Command
 from pydantic import BaseModel
 
 from auth import require_user
@@ -28,29 +29,45 @@ agent_app = None
 pending: queue.Queue
 
 
+def waiting_question(snapshot) -> dict | None:
+    """What a paused run asks a person (the interrupt's id and its questions), or None when it is not paused."""
+    return {"id": snapshot.interrupts[0].id, **snapshot.interrupts[0].value} if snapshot.interrupts else None
+
+
 def run_job(job_id: str) -> None:
     """Run the agent on a job's PDF, recording each node's status and, at the end, the UI spec or the error.
 
     The job id is the agent's thread id: the checkpointer saves the run's state under it after every node, so a run
     that a restart interrupted continues after its last finished node instead of starting over.
+
+    A run can also pause to ask a person (an interrupt): the job then waits as needs_input and the worker is free. POST
+    /jobs/{id}/answer queues it again, and the run continues with the answer, which is also what a restart does with a job
+    that was answered but not finished.
     """
     config = {"configurable": {"thread_id": job_id}, "recursion_limit": RECURSION_LIMIT}
     values = {}
     try:
-        resume = bool(agent_app.get_state(config).values)  # a checkpoint exists: continue after it (nothing runs if the run had finished)
+        snapshot = agent_app.get_state(config)
+        job = store.get(job_id, with_spec=False)
+        waiting, answer = waiting_question(snapshot), job["answer"]
+        if waiting and not (answer and answer["for"] == waiting["id"]):  # asking, and no answer to this question yet
+            store.wait_for_input(job_id, waiting)
+            return
+        resume = bool(snapshot.values)  # a checkpoint exists: continue after it (nothing runs if the run had finished)
         store.start(job_id, keep_statuses=resume)
-        inputs = (
-            None
-            if resume
-            else {
-                "document_path": str(store.pdf_path(job_id)),
-                "filename": store.get(job_id, with_spec=False)["filename"],
-                "job_id": job_id,
-            }
-        )
+        if waiting:
+            inputs = Command(resume={"answers": answer["answers"], "by": answer["by"]})
+        elif resume:
+            inputs = None
+        else:
+            inputs = {"document_path": str(store.pdf_path(job_id)), "filename": job["filename"], "job_id": job_id}
         for update in agent_app.stream(inputs, config, stream_mode="custom"):  # what the nodes report with their stream writer
             store.add_status(job_id, update["status"])
-        values = agent_app.get_state(config).values  # the last nodes' output, saved in the checkpoint
+        snapshot = agent_app.get_state(config)  # the last nodes' output, saved in the checkpoint
+        if waiting := waiting_question(snapshot):  # the run stopped to ask a person
+            store.wait_for_input(job_id, waiting)
+            return
+        values = snapshot.values
         if values.get("ui_spec") is None:
             raise RuntimeError("the agent finished without a report")
         store.finish(job_id, values["ui_spec"], values.get("result"), values)
@@ -123,7 +140,9 @@ def list_jobs():
 
 @router.get("/jobs/{job_id}")
 def get_job(job_id: str):
-    """One job: its status (queued, running, done or error), the node statuses so far, and `ui_spec` once it is done."""
+    """One job: its status (queued, running, needs_input, done or error), the node statuses so far, and `ui_spec` once it is done.
+
+    A needs_input job carries `question`: what the agent asks, to be answered with POST /jobs/{id}/answer."""
     job = store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="no such job")
@@ -137,6 +156,32 @@ def get_pdf(job_id: str):
     if job is None or not job["has_pdf"]:
         raise HTTPException(status_code=404, detail="no such document")
     return FileResponse(store.pdf_path(job_id), media_type="application/pdf", filename=job["filename"], content_disposition_type="inline")
+
+
+class Answer(BaseModel):
+    answers: dict[str, str]  # test name -> the answer; a test left out or blank stays a review
+    by: str
+
+
+@router.post("/jobs/{job_id}/answer")
+def answer_job(job_id: str, body: Answer):
+    """Answer what a paused agent asked (the job's `question`); the job is queued again and the agent continues with it."""
+    job = store.get(job_id, with_spec=False)
+    if job is None:
+        raise HTTPException(status_code=404, detail="no such job")
+    by = body.by.strip()
+    if not by:
+        raise HTTPException(status_code=422, detail="say who answers")
+    if job["status"] != "needs_input":
+        raise HTTPException(status_code=409, detail="the agent is not waiting for an answer")
+    question = job["question"]
+    unknown = set(body.answers) - {q["test"] for q in question["questions"]}
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"not a question asked: {', '.join(sorted(unknown))}")
+    if not store.answer(job_id, {"for": question["id"], "answers": body.answers, "by": by}):
+        raise HTTPException(status_code=409, detail="the agent is not waiting for an answer")
+    pending.put(job_id)
+    return store.get(job_id, with_spec=False)
 
 
 class Decision(BaseModel):

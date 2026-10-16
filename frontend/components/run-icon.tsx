@@ -1,4 +1,4 @@
-import { Check, Clock, Loader2, X } from "lucide-react";
+import { Check, CircleQuestionMark, Clock, Loader2, X } from "lucide-react";
 
 import type { Run } from "@/components/report-context";
 
@@ -6,6 +6,7 @@ import type { Run } from "@/components/report-context";
 const ICONS: Record<Run["state"], React.ReactNode> = {
   queued: <Clock className="size-4 text-muted-foreground" />,
   loading: <Loader2 className="size-4 animate-spin text-info motion-reduce:animate-none" />,
+  waiting: <CircleQuestionMark className="size-4 text-warning" />,
   done: <Check className="size-4 text-success" />,
   error: <X className="size-4 text-destructive" />,
 };

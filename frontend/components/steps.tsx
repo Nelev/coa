@@ -4,7 +4,13 @@ import { formatCost, formatDuration, formatMoment, formatTokens } from "@/lib/fo
 import { isActive, tokenUsage } from "@/lib/runs";
 import { cn } from "@/lib/utils";
 
-const STATE_WORDS: Record<Run["state"], string> = { queued: "waiting", loading: "in progress", done: "done", error: "failed" };
+const STATE_WORDS: Record<Run["state"], string> = {
+  queued: "waiting",
+  loading: "in progress",
+  waiting: "waiting for your answer",
+  done: "done",
+  error: "failed",
+};
 
 // What the agent reported, in order, as a timeline: the last status shows the run's state, every earlier one is done. While the run
 // is going, the last step is the current one (aria-current), and each step says its state in words, not only by its icon.
