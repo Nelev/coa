@@ -12,14 +12,15 @@ from fastapi.responses import FileResponse
 from langgraph.checkpoint.sqlite import SqliteSaver
 from pydantic import BaseModel
 
-from agent.agent import NON_CONFORMING, graph
 from auth import require_user
 from jobs import Jobs
-from notify import send_non_conforming_mail
+from react_agent.react_agent import graph
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent / "data"
+
+RECURSION_LIMIT = 40  # graph steps a run may take: the model decides how many, a normal check takes about 18
 
 # set when the app starts: the jobs table, the agent with its checkpointer, and the queue of job ids the workers take from
 store: Jobs
@@ -33,12 +34,20 @@ def run_job(job_id: str) -> None:
     The job id is the agent's thread id: the checkpointer saves the run's state under it after every node, so a run
     that a restart interrupted continues after its last finished node instead of starting over.
     """
-    config = {"configurable": {"thread_id": job_id}}
+    config = {"configurable": {"thread_id": job_id}, "recursion_limit": RECURSION_LIMIT}
     values = {}
     try:
         resume = bool(agent_app.get_state(config).values)  # a checkpoint exists: continue after it (nothing runs if the run had finished)
         store.start(job_id, keep_statuses=resume)
-        inputs = None if resume else {"document_path": str(store.pdf_path(job_id))}
+        inputs = (
+            None
+            if resume
+            else {
+                "document_path": str(store.pdf_path(job_id)),
+                "filename": store.get(job_id, with_spec=False)["filename"],
+                "job_id": job_id,
+            }
+        )
         for update in agent_app.stream(inputs, config, stream_mode="custom"):  # what the nodes report with their stream writer
             store.add_status(job_id, update["status"])
         values = agent_app.get_state(config).values  # the last nodes' output, saved in the checkpoint
@@ -50,12 +59,6 @@ def run_job(job_id: str) -> None:
             with suppress(Exception):
                 values = agent_app.get_state(config).values
         store.fail(job_id, str(error) or type(error).__name__, values)
-    else:  # outside the try: a mail that cannot be sent must not turn a finished job into a failed one
-        if (values.get("result") or {}).get("outcome") == NON_CONFORMING:
-            try:
-                send_non_conforming_mail(store.get(job_id, with_spec=False))
-            except Exception as error:
-                logger.warning("job %s: the non-conforming mail was not sent: %s: %s", job_id, type(error).__name__, error)
 
 
 def worker() -> None:

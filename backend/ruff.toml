@@ -7,3 +7,4 @@ select = ["E", "F", "I", "UP", "B"]
 
 [lint.per-file-ignores]
 "agent/prompts.py" = ["E501"]  # prompt text is prose, kept on one line per paragraph
+"react_agent/prompts.py" = ["E501"]
