@@ -15,8 +15,8 @@ and checks the reported results against the **plant's own specification** for th
 | Pause / resume (`is_running`, `is_paused`) | state fields only, not wired |
 | Plant checks beyond the test table (`approved_suppliers`, `min_remaining_shelf_life_days` in the ERP data) | **not checked**: the data is there, nothing reads it (see [Known limitations](#known-limitations)) |
 | Mail when a lot is non-conforming | done (SMTP; a failure is logged as a warning and never fails the job) |
-| API: `POST /jobs` queues the agent on an uploaded PDF; `GET /jobs` and `GET /jobs/{id}` return the progress and the UI spec; `GET /jobs/{id}/pdf` returns the certificate; `POST /jobs/{id}/decision` records a person's decision | done (jobs are kept in SQLite and survive restarts; CORS allows `http://localhost:3000` unless `CORS_ORIGINS` (comma-separated) says otherwise; every `/jobs` endpoint requires a WorkOS access token, but any signed-in person can see and decide every job) |
-| Frontend (Next.js + shadcn dashboard) | WorkOS AuthKit sign-in; light, dark or system theme (user menu). `/login` is the front door: a card that continues to WorkOS sign-in, over an animated pharmaceutical line (vials scanned and tagged PASS, REVIEW or FAIL, and drifting molecules; still for reduced motion), and signed-out visitors are sent there with the page they asked for. `/` is an overview: counts that double as filters (all, needs attention, in progress, conforming, awaiting decision), search, and a table you can sort by its headers, with live progress per run; the filter and sort are in the address, and `j`/`k`, `/` and `?` work from the keyboard. `/runs/[id]` opens with the lot, the verdict and a bar of the test results, then the report (with an Activity tab of the steps, and links to each finding), a link to open the CoA, and the decision: approve, put on hold or reject, as one of two demo reviewers, with a reason, in a column beside the report (a bottom sheet on a phone); rejecting, holding or overriding the agent asks for confirmation first, and toasts say what was recorded. Upload with the button or by dropping PDFs anywhere; runs come back after a reload |
+| API: `POST /jobs` queues the agent on an uploaded PDF; `GET /jobs` and `GET /jobs/{id}` return the progress, the UI spec and the tokens and cost (`input_tokens`, `output_tokens`, `cost_usd`) of the run's model calls; `GET /jobs/{id}/pdf` returns the certificate; `POST /jobs/{id}/decision` records a person's decision | done (jobs are kept in SQLite and survive restarts; CORS allows `http://localhost:3000` unless `CORS_ORIGINS` (comma-separated) says otherwise; every `/jobs` endpoint requires a WorkOS access token, but any signed-in person can see and decide every job) |
+| Frontend (Next.js + shadcn dashboard) | WorkOS AuthKit sign-in; light, dark or system theme (user menu). `/login` is the front door: a card that continues to WorkOS sign-in, over an animated pharmaceutical line (vials scanned and tagged PASS, REVIEW or FAIL, and drifting molecules; still for reduced motion), and signed-out visitors are sent there with the page they asked for. `/` is an overview: counts that double as filters (all, needs attention, in progress, conforming, awaiting decision), search, and a table you can sort by its headers, with live progress per run, how long each took, and its cost and tokens; the filter and sort are in the address, and `j`/`k`, `/` and `?` work from the keyboard. `/runs/[id]` opens with the lot, the verdict and a bar of the test results, then the report (with an Activity tab of the steps, and links to each finding), a link to open the CoA, and the decision: approve, put on hold or reject, as one of two demo reviewers, with a reason, in a column beside the report (a bottom sheet on a phone); rejecting, holding or overriding the agent asks for confirmation first, and toasts say what was recorded. Upload with the button or by dropping PDFs anywhere; runs come back after a reload |
 
 The plant limits in `backend/docs/erp_demo.json` are **placeholder values**, not real plant data.
 
@@ -46,7 +46,7 @@ test missing from the CoA is `fail` ("not reported").
 
 ### Guardrails around the model call
 
-- **Structured output.** Both model calls use `with_structured_output` with the Pydantic models in
+- **Structured output.** The structured model calls (validation, extraction, comparison) use `with_structured_output` with the Pydantic models in
   `backend/schema/schema.py`.
 - **Whitespace and unit cleanup in the schema.** The `Clean` and `Unit` types collapse the line-wrap whitespace
   that PDF extraction leaves behind and turn a unit of `-` into `None`.
@@ -70,6 +70,7 @@ test missing from the CoA is `fail` ("not reported").
 | `ui_spec` | json-render spec of the report page |
 | `messages` | `write_summary` puts the analysis (outcome, counts, header, tests, issues) here as compact JSON; `render_ui` reads it |
 | `result` | what the job list shows: outcome, verdict counts, product, lot, supplier (written by `write_summary`, or by `render_ui` for a non-CoA) |
+| `cost`, `input_tokens`, `output_tokens` | what the run's model calls used: USD charged by OpenRouter and tokens (output includes reasoning). Every node that calls the model returns its calls' usage (a retry included) and the fields add up (`operator.add`), so the checkpoint holds the total of the whole run, restarts included. A call whose provider reports no cost counts 0 |
 | `is_running`, `is_paused`, `report` | present but not used yet |
 
 ## The report UI (json-render)
@@ -110,14 +111,19 @@ upload starts, so the idle page does not download it.
 
 ### What it looks like
 
-The report for `backend/docs/sample_coa_defective.pdf`: the outcome, the recommendation (the release decision always
-stays with QA), and the certificate details.
+The run page for `backend/docs/sample_coa_defective.pdf`. Above the tabs, the lot, the verdict and a bar of the test results are
+part of the page; the **Report** tab below is the json-render spec: the certificate title, an outcome Alert and the certificate
+details. The release decision always stays with QA (the **Decide** bar at the bottom).
 
-![Report summary: non-conforming outcome, recommendation and certificate details](docs/images/report-summary.jpg)
+![Run page: verdict, test result bar and the start of the report](docs/images/report-summary.jpg)
 
-The findings (critical in red, warnings in yellow) and the results table with one verdict per plant test.
+The findings (critical in red, warnings in yellow), one Alert per non-passing check.
 
-![Report findings and results table](docs/images/report-findings.jpg)
+![Report findings](docs/images/report-findings.jpg)
+
+The results table with one verdict per plant test.
+
+![Report results table](docs/images/report-results.jpg)
 
 To generate it yourself, start the backend and the frontend (see [Running it](#running-it)), click **Upload documents**
 and pick a CoA PDF. The report appears after about a minute.
@@ -274,6 +280,7 @@ A job looks like this:
 | `error` | why the job failed, when `status` is `error` |
 | `started_at` | when a worker took the job, in milliseconds since the epoch |
 | `finished_at` | when the job ended (done or error), in milliseconds since the epoch |
+| `input_tokens`, `output_tokens`, `cost_usd` | what the run's model calls used (output tokens include reasoning) and what OpenRouter charged, in US dollars. Written when the job ends, from the totals in the run's state, so a failed job keeps what its calls before the failure cost; `null` for jobs from before this was recorded, and for a run that failed before its first call |
 | `decision`, `decided_by`, `decided_at`, `reason` | a person's decision on the finished job (see below); all `null` until someone decides |
 | `has_pdf` | whether the uploaded certificate is still stored, so `GET /jobs/{id}/pdf` has it (jobs from before the PDFs were kept do not) |
 | `result` | what the job list shows without the report, once the job is done: `outcome` (Conforming, Needs review, Non-conforming or Not a CoA), `counts` of pass / fail / review, `product`, `lot`, `supplier`. Written by `write_summary`, or by `render_ui` for a document that is not a CoA |

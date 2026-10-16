@@ -28,6 +28,8 @@ export type RunResult = {
 // queued: waiting on the server for a free worker; error: `message` says why, `statuses` how far the agent got.
 // startedAt / finishedAt: when the server started and ended the run, as Date.now() values (0 while that has not happened).
 // local: the run is not on the server (an upload that failed), so there is no report page for it.
+// inputTokens, outputTokens, cost: what the model calls of the run used, and what OpenRouter charged for them in US dollars; each is missing
+// until a call reports it (a run from before this was recorded has none, and cost stays missing if the provider does not say).
 // decision, decidedBy, decidedAt, reason: what a person decided about the lot (decidedAt as a Date.now() value); hasPdf: the certificate can be opened.
 export type Run = {
   id: string;
@@ -38,6 +40,9 @@ export type Run = {
   statuses: string[];
   result?: RunResult;
   message?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  cost?: number;
   local?: boolean;
   decision?: Decision;
   decidedBy?: string;
@@ -55,6 +60,9 @@ export type Job = {
   error: string | null;
   started_at: number | null;
   finished_at: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost_usd: number | null;
   result: RunResult | null;
   decision: Decision | null;
   decided_by: string | null;
@@ -77,6 +85,9 @@ function toRun(job: Job, previous?: Run): Run {
     statuses: job.statuses,
     result: job.result ?? undefined,
     message: job.error ?? undefined,
+    inputTokens: job.input_tokens ?? undefined,
+    outputTokens: job.output_tokens ?? undefined,
+    cost: job.cost_usd ?? undefined,
     decision: job.decision ?? undefined,
     decidedBy: job.decided_by ?? undefined,
     decidedAt: job.decided_at ?? undefined,
@@ -89,6 +100,9 @@ function toRun(job: Job, previous?: Run): Run {
     previous.message === run.message &&
     previous.startedAt === run.startedAt &&
     previous.finishedAt === run.finishedAt &&
+    previous.inputTokens === run.inputTokens &&
+    previous.outputTokens === run.outputTokens &&
+    previous.cost === run.cost &&
     previous.decision === run.decision &&
     previous.decidedAt === run.decidedAt &&
     previous.hasPdf === run.hasPdf;

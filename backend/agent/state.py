@@ -1,3 +1,4 @@
+import operator
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import AnyMessage
@@ -12,6 +13,9 @@ class AgentState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     document_path: str
     document_text: str
+    cost: Annotated[float, operator.add]  # USD the model calls charged so far; each node returns its calls' cost to add
+    input_tokens: Annotated[int, operator.add]
+    output_tokens: Annotated[int, operator.add]  # includes the model's reasoning
     supplier_materials: dict[str, str]  # CoA header: product, lot, dates, PO, ...
     spec_values: dict[str, str]  # test name -> specification limit
     tests: list[dict]  # structured CoA rows: test, result, unit, specification, method, status

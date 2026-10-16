@@ -41,6 +41,28 @@ def _status(text: str) -> None:
     get_stream_writer()({"status": text})
 
 
+NO_USAGE = {"cost": 0.0, "input_tokens": 0, "output_tokens": 0}  # also the keys of a usage dict
+
+
+def _usage(message: AIMessage) -> dict:
+    """What one model call used: its tokens, and the cost OpenRouter charged for it (0 when the provider does not say)."""
+    tokens = message.usage_metadata or {}
+    cost = (message.response_metadata.get("token_usage") or {}).get("cost") or 0.0
+    return {"cost": cost, "input_tokens": tokens.get("input_tokens", 0), "output_tokens": tokens.get("output_tokens", 0)}
+
+
+def _sum_usage(*usages: dict) -> dict:
+    return {key: sum(u[key] for u in usages) for key in NO_USAGE}
+
+
+def _ask_structured(llm, schema, prompt: str):
+    """Call the model for a `schema` result; returns it with the call's usage."""
+    out = llm.with_structured_output(schema, include_raw=True).invoke(prompt)
+    if out["parsed"] is None:
+        raise out["parsing_error"]
+    return out["parsed"], _usage(out["raw"])
+
+
 @lru_cache
 def get_llm() -> ChatOpenAI:
     return ChatOpenAI(
@@ -67,12 +89,12 @@ def validate_document(state: AgentState) -> dict:
     _status("Checking it is a CoA")
     text = state["document_text"]
     if text.strip():
-        check = get_llm().with_structured_output(DocumentCheck).invoke(VALIDATE_PROMPT + text[:VALIDATION_CHARS])
+        check, usage = _ask_structured(get_llm(), DocumentCheck, VALIDATE_PROMPT + text[:VALIDATION_CHARS])
     else:
-        check = DocumentCheck(is_coa=False, reason="The PDF has no extractable text (it may be a scan).")
+        check, usage = DocumentCheck(is_coa=False, reason="The PDF has no extractable text (it may be a scan)."), NO_USAGE
     if check.is_coa:
-        return {}
-    return {"issues": [Issue(kind="not_a_coa", severity="critical", message=check.reason).model_dump()]}
+        return usage
+    return {**usage, "issues": [Issue(kind="not_a_coa", severity="critical", message=check.reason).model_dump()]}
 
 
 def route_after_validation(state: AgentState) -> str:
@@ -82,9 +104,10 @@ def route_after_validation(state: AgentState) -> str:
 def get_document_data(state: AgentState) -> dict:
     """Extract the CoA header, specifications and reported results from the document text."""
     _status("Extracting the CoA data")
-    coa = get_llm().with_structured_output(CoAData).invoke(EXTRACTION_PROMPT + state["document_text"])
+    coa, usage = _ask_structured(get_llm(), CoAData, EXTRACTION_PROMPT + state["document_text"])
 
     return {
+        **usage,
         "supplier_materials": {k: v for k, v in coa.header.model_dump().items() if v is not None},
         "spec_values": {t.test: t.specification for t in coa.tests if t.specification},
         "tests": [t.model_dump() for t in coa.tests],
@@ -119,8 +142,9 @@ def _supplier_result(test: dict) -> str:
     return f"{test['result']} {test['unit']}" if test["unit"] else test["result"]
 
 
-def _ask(llm, prompt: str) -> dict[str, TestCheck]:
-    return {c.test: c for c in llm.invoke(prompt).checks}
+def _ask(llm, prompt: str) -> tuple[dict[str, TestCheck], dict]:
+    result, usage = _ask_structured(llm, ComparisonResult, prompt)
+    return {c.test: c for c in result.checks}, usage
 
 
 def compare_specs(state: AgentState) -> dict:
@@ -137,16 +161,17 @@ def compare_specs(state: AgentState) -> dict:
         + json.dumps(coa_tests, ensure_ascii=False, separators=(",", ":"))
     )
 
-    llm = get_llm().with_structured_output(ComparisonResult)
-    checks = _ask(llm, prompt)
+    llm = get_llm()
+    checks, usage = _ask(llm, prompt)
     if set(checks) != expected:  # one retry, telling the model what was wrong
-        checks = _ask(
+        checks, retry_usage = _ask(
             llm,
             (
                 prompt + f"\n\nYour previous answer did not match the plant tests (missing: {sorted(expected - set(checks))}; "
                 f"unexpected: {sorted(set(checks) - expected)}). Return exactly one check per plant test, names verbatim."
             ),
         )
+        usage = _sum_usage(usage, retry_usage)
 
     supplier_results = {t["test"]: _supplier_result(t) for t in state["tests"]}
     test_checks, issues = [], []
@@ -158,7 +183,7 @@ def compare_specs(state: AgentState) -> dict:
         if check.verdict != "pass":
             kind, severity = VERDICT_ISSUE[check.verdict]
             issues.append(Issue(kind=kind, severity=severity, message=check.reason, test=name, **details).model_dump())
-    return {"test_checks": test_checks, "issues": issues}
+    return {**usage, "test_checks": test_checks, "issues": issues}
 
 
 NON_CONFORMING = "Non-conforming"
@@ -208,16 +233,19 @@ def render_ui(state: AgentState) -> dict:
         return {"ui_spec": spec, "result": _result(NOT_A_COA, [], {})}
     prompt = f"{RENDER_UI_PROMPT}\n{state['messages'][-1].content}"
     feedback = ""
+    usage = NO_USAGE
     for _ in range(2):  # one retry, telling the model what was wrong
+        reply = get_llm().invoke(prompt + feedback)
+        usage = _sum_usage(usage, _usage(reply))
         try:
-            spec = parse_json_markdown(get_llm().invoke(prompt + feedback).content)
+            spec = parse_json_markdown(reply.content)
         except ValueError as error:
             feedback = f"\n\nYour previous reply was not valid JSON ({error}). Reply with only the JSON object."
             continue
         if isinstance(spec, dict) and isinstance(spec.get("elements"), dict) and spec.get("root") in spec["elements"]:
-            return {"ui_spec": spec}
+            return {**usage, "ui_spec": spec}
         feedback = '\n\nYour previous reply was not a spec with a "root" key that exists in "elements". Reply with only the JSON object.'
-    return {"ui_spec": FALLBACK_UI_SPEC}
+    return {**usage, "ui_spec": FALLBACK_UI_SPEC}
 
 
 graph = StateGraph(AgentState)

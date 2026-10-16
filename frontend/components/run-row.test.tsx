@@ -47,6 +47,19 @@ describe("RunRow", () => {
     expect(row({ state: "loading", startedAt: NOW - 3_000, finishedAt: 0 })).not.toContain("3.0s");
   });
 
+  it("shows what a run cost and the tokens it used, and nothing for a run that has no usage", () => {
+    const html = row({ result: result(), inputTokens: 11_000, outputTokens: 1_400, cost: 0.0031 });
+    expect(html).toContain("$0.0031");
+    expect(html).toContain("12.4k tokens");
+    expect(row({ result: result() })).not.toContain("tokens");
+  });
+
+  it("shows the tokens even when the provider did not say what they cost", () => {
+    const html = row({ result: result(), inputTokens: 500, outputTokens: 20 });
+    expect(html).toContain("520 tokens");
+    expect(html).not.toContain("$");
+  });
+
   it("shows the step and the time while it is running", () => {
     const html = row({ state: "loading", startedAt: Date.now(), statuses: ["Reading the PDF", "Checking it is a CoA"] });
     expect(html).toContain("Step 2");
