@@ -12,6 +12,8 @@ class AgentState(TypedDict):
 
     messages: Annotated[list[AnyMessage], add_messages]
     document_path: str
+    filename: str  # the uploaded file's name and the job's id: what the mail about a non-conforming lot names
+    job_id: str
     document_text: str
     cost: Annotated[float, operator.add]  # USD the model calls charged so far; each node returns its calls' cost to add
     input_tokens: Annotated[int, operator.add]

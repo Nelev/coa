@@ -5,7 +5,7 @@
       "name": "Citric Acid Anhydrous",
       "specification_ref": "NF-SPEC-0231 rev. 4",
       "approved_suppliers": ["Alpina Chemicals S.p.A."],
-      "min_remaining_shelf_life_days": 180,
+      "min_remaining_shelf_life_days": 730,
       "tests": [
         {"test": "Appearance", "type": "qualitative", "accepted": ["conforms", "complies"], "requirement": "White crystalline powder or colourless crystals"},
         {"test": "Identification (A, B)", "type": "qualitative", "accepted": ["complies"], "requirement": "Complies"},

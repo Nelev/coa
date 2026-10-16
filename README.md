@@ -14,7 +14,9 @@ and checks the reported results against the **plant's own specification** for th
 | Report page: model lays out the results as a json-render UI spec, rendered by the frontend | done |
 | Pause / resume (`is_running`, `is_paused`) | state fields only, not wired |
 | Plant checks beyond the test table (`approved_suppliers`, `min_remaining_shelf_life_days` in the ERP data) | **not checked**: the data is there, nothing reads it (see [Known limitations](#known-limitations)) |
-| Mail when a lot is non-conforming | done (SMTP; a failure is logged as a warning and never fails the job) |
+| Two implementations of the agent, built for development and learning: a fixed graph (`backend/agent/`) and a ReAct agent (`backend/react_agent/`); the API runs the ReAct one | done |
+| The agent is a ReAct loop of two nodes, `agent` (the model, with the tools bound) and `tools` (runs what it called); every step of the check is a tool, and the model picks the next one | done |
+| Mail when a lot is non-conforming | done (SMTP, sent by the `notify_quality_team` tool, which refuses any other outcome; a failure is logged as a warning and never fails the job) |
 | API: `POST /jobs` queues the agent on an uploaded PDF; `GET /jobs` and `GET /jobs/{id}` return the progress, the UI spec and the tokens and cost (`input_tokens`, `output_tokens`, `cost_usd`) of the run's model calls; `GET /jobs/{id}/pdf` returns the certificate; `POST /jobs/{id}/decision` records a person's decision | done (jobs are kept in SQLite and survive restarts; CORS allows `http://localhost:3000` unless `CORS_ORIGINS` (comma-separated) says otherwise; every `/jobs` endpoint requires a WorkOS access token, but any signed-in person can see and decide every job) |
 | Frontend (Next.js + shadcn dashboard) | WorkOS AuthKit sign-in; light, dark or system theme (user menu). `/login` is the front door: a card that continues to WorkOS sign-in, over an animated pharmaceutical line (vials scanned and tagged PASS, REVIEW or FAIL, and drifting molecules; still for reduced motion), and signed-out visitors are sent there with the page they asked for. `/` is an overview: counts that double as filters (all, needs attention, in progress, conforming, awaiting decision), search, and a table you can sort by its headers, with live progress per run, how long each took, and its cost and tokens; the filter and sort are in the address, and `j`/`k`, `/` and `?` work from the keyboard. `/runs/[id]` opens with the lot, the verdict and a bar of the test results, then the report (with an Activity tab of the steps, and links to each finding), a link to open the CoA, and the decision: approve, put on hold or reject, as one of two demo reviewers, with a reason, in a column beside the report (a bottom sheet on a phone); rejecting, holding or overriding the agent asks for confirmation first, and toasts say what was recorded. Upload with the button or by dropping PDFs anywhere; runs come back after a reload |
 
@@ -22,7 +24,23 @@ The plant limits in `backend/docs/erp_demo.json` are **placeholder values**, not
 
 ## How the agent works
 
-The agent is a [LangGraph](https://langchain-ai.github.io/langgraph/) graph in `backend/agent/agent.py`:
+The check was built **twice, for development and learning purposes**, with the same steps and the same prompts and schema:
+
+| | Fixed graph | ReAct agent |
+|---|---|---|
+| Code | `backend/agent/` | `backend/react_agent/` |
+| Who picks the next step | the graph's edges | the model, from each tool's answer |
+| Steps are | nodes | tools |
+| Run by | `python -m agent.agent` and `scripts/eval_compare.py` | **the API** (`main.py`) |
+| Mails a non-conforming lot | no | yes, with the `notify_quality_team` tool |
+
+The API, the job list and everything below the diagram describe the ReAct agent; the fixed graph is kept as the first version and as a
+point of comparison. Both are [LangGraph](https://langchain-ai.github.io/langgraph/) graphs and share the Pydantic models in
+`backend/schema/schema.py` and the demo ERP. Each has its own copy of the prompts and the state (`prompts.py`, `state.py`), and
+`react_agent/tools.py` re-implements the steps instead of calling `agent/agent.py`. Only the ReAct agent uses the `get_material` and `send_email`
+tools in `backend/agent/tools.py`; the fixed graph reads the ERP directly.
+
+### The fixed graph (`backend/agent/agent.py`)
 
 ```
 START → load_document → validate_document ─┬→ get_document_data → load_plant_spec ─┬→ compare_specs → write_summary → render_ui → END
@@ -30,14 +48,40 @@ START → load_document → validate_document ─┬→ get_document_data → lo
                                            └─────────────────────────────────────────────────────→ render_ui → END                  (not a CoA)
 ```
 
-| Node | Uses a model? | What it does |
+Each node does what the tool of the same name does (table below), in an order the edges fix: the routing is plain Python
+(`route_after_validation`, `route_after_plant_spec`), so it never skips or repeats a step. It has no `notify_quality_team`: nothing mails a lot.
+
+### The ReAct agent (`backend/react_agent/react_agent.py`, run by the API)
+
+It has two nodes, `agent` (the model, with the tools bound) and `tools` (a `ToolNode` that runs the calls). The model reads each tool's short
+answer and picks the next call, following the order in its system prompt:
+
+```
+START → agent ⇄ tools → END        (the agent ends the run when it makes no tool call)
+
+load_document → validate_document ─┬→ get_document_data → load_plant_spec ─┬→ compare_specs → write_summary → render_ui → notify_quality_team*
+                                   │                                       └──────────────→ write_summary → render_ui → notify_quality_team*   (no plant spec)
+                                   └─────────────────────────────────────────────────────→ render_ui                                          (not a CoA)
+                                                                                         * only a non-conforming lot is mailed
+```
+
+The tools are in `backend/react_agent/tools.py`. Each returns its state update (the document text, the tests and the UI spec stay in the state, not in
+the conversation) and a short answer for the model. A tool called too early answers what to call first; any other failure (the ERP down, an invalid
+model reply) fails the run. A run is capped at `RECURSION_LIMIT` graph steps (`main.py`); a normal check takes about 18. The price of letting the model
+choose: a run takes longer (1.5 to 2.5 minutes on the samples, measured with `gpt-5-mini`) and the model can ignore its prompt, which is why the mail is a guarded tool.
+
+The steps (the fixed graph's nodes, the ReAct agent's tools):
+
+| Step | Uses a model? | What it does |
 |---|---|---|
 | `load_document` | no | Extracts the text of the PDF at `document_path` with `pypdf`. |
-| `validate_document` | yes | Asks the model whether the start of the text is a supplier CoA. If not, or if the PDF has no extractable text, it records a critical `not_a_coa` issue and the graph skips to `render_ui`. |
+| `validate_document` | yes | Asks the model whether the start of the text is a supplier CoA. If not, or if the PDF has no extractable text, it records a critical `not_a_coa` issue and the model skips to `render_ui`. |
 | `get_document_data` | yes | Extracts the CoA into a structured schema: header (certificate, product, lot, dates, PO, quantities), one row per test (specification, method, result, unit, supplier status) and the conclusion. The prompt asks for verbatim values and `null` for anything not stated. |
-| `load_plant_spec` | no | Looks up the CoA's `product_code` in the ERP's material master (`docs/erp_demo.json`). If there is no entry, it records a `missing_plant_spec` issue and the graph ends without calling the model. |
+| `load_plant_spec` | no | Looks up the CoA's `product_code` in the ERP's material master (`docs/erp_demo.json`). If there is no entry, it records a `missing_plant_spec` issue and the model skips `compare_specs`. It runs the `get_material` tool itself. |
 | `compare_specs` | yes | Sends the plant requirements and the CoA results (`test`, `result`, `unit` only, so the supplier's own limits and pass/fail can't bias the judgement) to the model with a dedicated prompt. It returns one verdict per plant test: `pass`, `fail` or `review`. |
-| `render_ui` | yes | Last node. Sends the header, the per-test verdicts and the issues to the model with a prompt that lists the available components (Stack, Grid, Card, Separator, Collapsible, Accordion, Heading, Text, Badge, Alert, Progress, Table) and how to lay out the page. The reply is a [json-render](https://github.com/vercel-labs/json-render) spec stored in `ui_spec`. Invalid JSON is retried once, then replaced by an error Alert. For a document that is not a CoA it skips the model and returns a fixed error Alert. |
+| `write_summary` | no | Works out the outcome (Conforming, Needs review or Non-conforming) from the issues and the verdicts, and stores the few facts the job list shows in `result`. |
+| `render_ui` | yes | Last step. Sends the header, the per-test verdicts and the issues to the model with a prompt that lists the available components (Stack, Grid, Card, Separator, Collapsible, Accordion, Heading, Text, Badge, Alert, Progress, Table) and how to lay out the page. The reply is a [json-render](https://github.com/vercel-labs/json-render) spec stored in `ui_spec`. Invalid JSON is retried once, then replaced by an error Alert. For a document that is not a CoA it skips the model and returns a fixed error Alert. |
+| `notify_quality_team` | no | ReAct agent only. Mails the plant's quality team about a non-conforming lot (product, lot, supplier, test counts, a link to the job). It takes no arguments and does nothing for any other outcome: the model, told to mail only non-conforming lots, mailed a conforming one in every live run. |
 
 Rules in the comparison prompt: judge against the plant requirements only; limits are inclusive; a `< x`
 result passes a `max` limit only if x ≤ max and can't be confirmed against a `min` limit; a unit mismatch is
@@ -56,7 +100,7 @@ test missing from the CoA is `fail` ("not reported").
 - **Issues are derived in code**, not written by the model: every non-pass verdict becomes an `Issue`
   (`fail` → `non_conforming`/`critical`, `review` → `needs_review`/`warning`).
 
-### State (`backend/agent/state.py`)
+### State (`backend/agent/state.py`, copied in `backend/react_agent/state.py`)
 
 | Field | Content |
 |---|---|
@@ -68,9 +112,9 @@ test missing from the CoA is `fail` ("not reported").
 | `test_checks` | one verdict per plant test, with the supplier result and plant requirement |
 | `issues` | non-passing checks and missing-spec problems (see `schema.Issue`) |
 | `ui_spec` | json-render spec of the report page |
-| `messages` | `write_summary` puts the analysis (outcome, counts, header, tests, issues) here as compact JSON; `render_ui` reads it |
+| `messages` | ReAct agent: the conversation (the task, the model's tool calls and each tool's short answer). Fixed graph: `write_summary` puts the analysis (outcome, counts, header, tests, issues) here as compact JSON and `render_ui` reads it |
 | `result` | what the job list shows: outcome, verdict counts, product, lot, supplier (written by `write_summary`, or by `render_ui` for a non-CoA) |
-| `cost`, `input_tokens`, `output_tokens` | what the run's model calls used: USD charged by OpenRouter and tokens (output includes reasoning). Every node that calls the model returns its calls' usage (a retry included) and the fields add up (`operator.add`), so the checkpoint holds the total of the whole run, restarts included. A call whose provider reports no cost counts 0 |
+| `cost`, `input_tokens`, `output_tokens` | what the run's model calls used: USD charged by OpenRouter and tokens (output includes reasoning). Every node or tool that calls the model returns its calls' usage (a retry included), and so does the ReAct agent's own `agent` node and the fields add up (`operator.add`), so the checkpoint holds the total of the whole run, restarts included. A call whose provider reports no cost counts 0 |
 | `is_running`, `is_paused`, `report` | present but not used yet |
 
 ## The report UI (json-render)
@@ -100,9 +144,9 @@ How the pieces fit:
 
 | Step | Where | What happens |
 |---|---|---|
-| 1. Prompt | `RENDER_UI_PROMPT` in `backend/agent/prompts.py` | Lists the available components and their props (the twelve in the table above) and says how to build the page: outcome badge and recommendation, certificate card, findings as Alerts (critical first), the results table, and a "not assessed" note. The model gets only the header, the per-test verdicts and the issues, and must copy values exactly. |
-| 2. Node | `render_ui` in `backend/agent/agent.py` | Sends the prompt, parses the JSON reply (fenced or not) and stores it as `ui_spec`. Invalid replies are retried once with the error, then replaced by an error Alert. |
-| 3. API | `POST /jobs` in `backend/main.py` | Queues the whole graph for an uploaded PDF; a worker runs it, records what each node is doing, then the `ui_spec`. |
+| 1. Prompt | `RENDER_UI_PROMPT` in `backend/react_agent/prompts.py` | Lists the available components and their props (the twelve in the table above) and says how to build the page: outcome badge and recommendation, certificate card, findings as Alerts (critical first), the results table, and a "not assessed" note. The model gets only the header, the per-test verdicts and the issues, and must copy values exactly. |
+| 2. Tool | `render_ui` in `backend/react_agent/tools.py` | Sends the prompt, parses the JSON reply (fenced or not) and stores it as `ui_spec`. Invalid replies are retried once with the error, then replaced by an error Alert. |
+| 3. API | `POST /jobs` in `backend/main.py` | Queues the agent for an uploaded PDF; a worker runs it, records what each tool is doing, then the `ui_spec`. |
 | 4. Upload | `frontend/components/upload-button.tsx`, `report-context.tsx` | The **Upload documents** button (or a drop anywhere on the page) posts each PDF to the API, which queues them, and polls the jobs once a second while any is unfinished. There is one run per file (queued, loading, error, done). |
 | 5. Render | `frontend/components/report-renderer.tsx` | Validates the spec against the catalog (the same twelve components, taken from `@json-render/shadcn`) and renders it inside the page's `<main>`. An invalid spec shows an error message instead of rendering. |
 
@@ -133,7 +177,8 @@ and pick a CoA PDF. The report appears after about a minute.
 ```
 docs/images/        screenshots used in this README
 backend/
-  agent/            LangGraph graph (agent.py), prompts (prompts.py) and state (state.py)
+  react_agent/      the ReAct agent main.py runs (the second implementation): the agent (react_agent.py), the steps of the check as tools (tools.py), its prompts (prompts.py) and state (state.py)
+  agent/            the fixed graph, the first implementation (agent.py, prompts.py, state.py), and the get_material and send_email tools (tools.py) that the ReAct agent's tools use
   schema/           Pydantic models: CoA extraction, check verdicts, issues (schema.py)
   erp.py            the demo ERP: the material master, read from docs/erp_demo.json
   docs/             sample CoAs and the demo ERP data
@@ -141,11 +186,11 @@ backend/
     sample_coa_citric_acid_3pages.pdf  the same kind of conforming CoA over three pages, for bigger documents
     sample_coa_defective.pdf      CoA with five seeded defects
     erp_demo.json                 materials with their plant requirements
-  scripts/eval_compare.py         end-to-end check against the real model
+  scripts/eval_compare.py         end-to-end check against the real model (runs the fixed graph)
   tests/                          unit tests (mocked model): API and queue, sign-in, comparison, validation, mail
   main.py                         FastAPI app: /health, the /jobs endpoints (create, list, get, pdf, decision), plus the job queue and its workers
   auth.py                         checks the WorkOS access token on every /jobs request
-  notify.py                       the mail sent when a lot is non-conforming (SMTP)
+  notify.py                       the mail about a non-conforming lot (SMTP): its text, and the sending the notify_quality_team and send_email tools do
   jobs.py                         the jobs table (SQLite, with the decisions) and the uploaded PDFs; data lives in backend/data/ (gitignored)
 frontend/           Next.js + shadcn dashboard, light / dark / system theme (tokens in app/globals.css, contrast checked by lib/contrast.test.ts)
   proxy.ts                         signs people in with WorkOS AuthKit; signed-out visitors go to /login
@@ -220,7 +265,7 @@ when the API starts, so restart it after changing it.
 A mail that cannot be sent never fails the job: it stays done, the worker keeps running, and the API logs one warning:
 
 ```
-WARNING main: job <id>: the non-conforming mail was not sent: SMTPAuthenticationError: (525, b'5.7.1 Unauthorized IP address')
+WARNING agent.agent: the non-conforming mail was not sent: SMTPAuthenticationError: (525, b'5.7.1 Unauthorized IP address')
 ```
 
 That example is Brevo refusing a login from an IP that is not on its allow-list (*Security → Authorized IPs*); a server needs
@@ -240,7 +285,7 @@ Every setting, for reference (the backend reads the environment and `backend/.en
 | `WORKOS_API_KEY`, `WORKOS_COOKIE_PASSWORD`, `NEXT_PUBLIC_WORKOS_REDIRECT_URI` | frontend | WorkOS AuthKit (the cookie password is 32+ characters) |
 | `NEXT_PUBLIC_API_URL` | frontend | the API's address, default `http://localhost:8000` |
 
-Run the agent on the sample CoA, or on another PDF:
+Run the fixed graph on the sample CoA, or on another PDF (the ReAct agent runs through the API):
 
 ```bash
 cd backend
@@ -290,12 +335,12 @@ How the queue works:
 - `MAX_CONCURRENT_RUNS` (default 2) worker threads take job ids from an in-memory queue. The jobs themselves are rows in
   `backend/data/jobs.db`, and the uploaded PDFs are kept in `backend/data/uploads/` (set `JOBS_DIR` to move both): the certificate is the record a decision is about.
 - The agent is compiled with a SQLite checkpointer (`backend/data/checkpoints.db`) and run with the job id as its
-  `thread_id`, so its state is saved after every node.
+  `thread_id`, so its state is saved after every step.
 - When the API starts, jobs that were running (the process died) go back to the queue. A job whose run had passed some
-  nodes continues after the last finished one; one that had not starts over. Jobs are kept until you delete `backend/data/`.
+  steps continues after the last finished one; one that had not starts over. Jobs are kept until you delete `backend/data/`.
 - The queue is per process: run one uvicorn worker.
 
-The frontend shows the `statuses` in order and knows nothing about the graph. Nodes the graph routes around
+The frontend shows the `statuses` in order and knows nothing about the graph. Tools the model does not call
 (for example everything between `validate_document` and `render_ui` for a document that is not a CoA) send no status,
 so they do not appear. `get_stream_writer()` only works inside a graph run, so the unit tests make it a no-op
 (`tests/conftest.py`).
@@ -324,7 +369,7 @@ Sign in with WorkOS first: the frontend needs the `frontend/.env.local` variable
 (for example `backend/docs/sample_coa_defective.pdf`). The report appears in the page after about a minute. The
 frontend calls `http://localhost:8000`; set `NEXT_PUBLIC_API_URL` to use another address.
 
-The component list in `RENDER_UI_PROMPT` (`backend/agent/prompts.py`) and the catalog in
+The component list in `RENDER_UI_PROMPT` (`backend/react_agent/prompts.py`, copied in `backend/agent/prompts.py`) and the catalog in
 `frontend/components/report-renderer.tsx` must be kept in sync by hand.
 
 ## Testing

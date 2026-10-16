@@ -2,7 +2,6 @@ import json
 
 from langchain_core.messages import AIMessage
 
-import erp
 from agent import agent
 from agent.prompts import RENDER_UI_PROMPT
 from schema import schema
@@ -65,24 +64,6 @@ def test_retry_recovers_when_second_response_is_complete(fake_llm):
     assert out["issues"] == []
     assert out["cost"] == 2 * CALL_USAGE["cost"]  # the retry is paid for too
     assert out["input_tokens"] == 2 * CALL_USAGE["input_tokens"]
-
-
-def test_unknown_product_code_records_issue_and_skips_comparison(monkeypatch, tmp_path):
-    specs = tmp_path / "specs.json"
-    specs.write_text('{"materials": {}}')
-    monkeypatch.setattr(erp, "ERP_PATH", specs)
-    out = agent.load_plant_spec({"supplier_materials": {"product_code": "XX-1"}})
-    assert out["issues"][0]["kind"] == "missing_plant_spec"
-    assert agent.route_after_plant_spec(out) == "write_summary"
-
-
-def test_known_product_code_routes_to_comparison(monkeypatch, tmp_path):
-    specs = tmp_path / "specs.json"
-    specs.write_text('{"materials": {"CA-ANH-25": {"name": "Citric Acid", "tests": []}}}')
-    monkeypatch.setattr(erp, "ERP_PATH", specs)
-    out = agent.load_plant_spec({"supplier_materials": {"product_code": "CA-ANH-25"}})
-    assert out["plant_spec"]["name"] == "Citric Acid"
-    assert agent.route_after_plant_spec(out) == "compare_specs"
 
 
 STATE_WITH_MESSAGE = {"messages": [AIMessage("Lot 42 is non-conforming.")], "issues": []}

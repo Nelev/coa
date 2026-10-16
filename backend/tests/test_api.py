@@ -11,11 +11,12 @@ from fastapi.testclient import TestClient
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 import main
-from agent.agent import DOCS_DIR, graph
+from agent.agent import DOCS_DIR
 from jobs import Jobs
+from react_agent.react_agent import graph
 from schema import schema
 from schema.schema import DocumentCheck
-from tests.conftest import CALL_USAGE
+from tests.conftest import CALL_USAGE, call
 
 RESULT = {
     "outcome": "Conforming",
@@ -27,6 +28,15 @@ RESULT = {
 USAGE = {"cost": 0.0014, "input_tokens": 140, "output_tokens": 30}  # what a run's state holds once its model calls are added up
 SPEC = {"root": "a", "elements": {"a": {"type": "Text", "props": {"text": "hi"}, "children": []}}}
 CITRIC_ACID_PDF = (DOCS_DIR / "sample_coa_citric_acid.pdf").read_bytes()
+
+# the model's answers, in order, for an agent run on an invoice: three tool calls and the answer, with the check's own model call between
+NOT_A_COA_RUN = [
+    call("load_document"),
+    call("validate_document"),
+    DocumentCheck(is_coa=False, reason="It is an invoice."),
+    call("render_ui"),
+    "Not a CoA.",
+]
 
 
 class FakeAgent:
@@ -110,8 +120,8 @@ def test_a_job_records_the_status_of_each_node_then_the_ui_spec(start_app, monke
     assert job["result"] == RESULT
     assert job["started_at"] <= job["finished_at"]
     assert agent.calls[0] == (
-        {"document_path": seen["path"]},
-        {"configurable": {"thread_id": created["id"]}},
+        {"document_path": seen["path"], "filename": "coa.pdf", "job_id": created["id"]},
+        {"configurable": {"thread_id": created["id"]}, "recursion_limit": main.RECURSION_LIMIT},
     )  # the job id is the thread id
     assert seen["bytes"] == b"%PDF-fake"
     assert Path(seen["path"]).read_bytes() == b"%PDF-fake"  # the certificate is kept: it is the record the decision is about
@@ -221,53 +231,6 @@ def test_an_agent_that_ends_without_a_report_is_an_error(start_app, monkeypatch)
     assert (job["status"], job["error"]) == ("error", "the agent finished without a report")
 
 
-def run_to_the_end(monkeypatch, outcome="Conforming", spec=SPEC):
-    """Runs one job to its end in this thread (the workers have nothing queued) and returns its id."""
-    monkeypatch.setattr(main, "agent_app", FakeAgent("Reading the PDF", spec=spec))
-    monkeypatch.setitem(RESULT, "outcome", outcome)
-    job_id = main.store.create("coa.pdf", io.BytesIO(b"%PDF-fake"))
-    main.run_job(job_id)
-    return job_id
-
-
-@pytest.mark.parametrize("outcome, mailed", [("Non-conforming", True), ("Needs review", False), ("Conforming", False)])
-def test_only_a_lot_that_does_not_conform_is_mailed(start_app, monkeypatch, outcome, mailed):
-    start_app()
-    mails = []
-    monkeypatch.setattr(main, "send_non_conforming_mail", mails.append)
-
-    job_id = run_to_the_end(monkeypatch, outcome)
-
-    assert [(job["id"], job["filename"], job["result"]["outcome"]) for job in mails] == ([(job_id, "coa.pdf", outcome)] if mailed else [])
-
-
-def test_a_job_that_fails_is_not_mailed(start_app, monkeypatch):
-    start_app()
-    mails = []
-    monkeypatch.setattr(main, "send_non_conforming_mail", mails.append)
-
-    job_id = run_to_the_end(monkeypatch, "Non-conforming", spec=None)
-
-    assert main.store.get(job_id)["status"] == "error" and mails == []
-
-
-def test_a_mail_that_cannot_be_sent_leaves_the_job_done_and_logs_a_warning(start_app, monkeypatch, caplog):
-    start_app()
-
-    def broken(job):
-        raise OSError("mail server down")
-
-    monkeypatch.setattr(main, "send_non_conforming_mail", broken)
-
-    job_id = run_to_the_end(monkeypatch, "Non-conforming")
-
-    job = main.store.get(job_id)
-    assert job["status"] == "done" and job["error"] is None
-    assert [(r.levelname, r.getMessage()) for r in caplog.records if r.name == "main"] == [
-        ("WARNING", f"job {job_id}: the non-conforming mail was not sent: OSError: mail server down")
-    ]
-
-
 def test_at_most_the_configured_number_of_jobs_run_at_once(start_app, monkeypatch):
     lock, running, most = threading.Lock(), 0, 0
 
@@ -294,13 +257,13 @@ def test_an_unknown_job_is_a_404(start_app):
     assert start_app().get("/jobs/nope").status_code == 404
 
 
-def test_the_real_graph_reports_the_nodes_it_runs(start_app, fake_llm):
-    fake_llm(DocumentCheck(is_coa=False, reason="It is an invoice."))
+def test_the_real_graph_reports_the_steps_it_runs(start_app, fake_llm):
+    fake_llm(*NOT_A_COA_RUN)
     client = start_app()
 
     job = wait_for_end(client, submit(client, CITRIC_ACID_PDF)["id"])
 
-    # the extraction, plant lookup and comparison are routed around for a document that is not a CoA
+    # the extraction, plant lookup and comparison are skipped for a document that is not a CoA
     assert job["statuses"] == ["Reading the PDF", "Checking it is a CoA", "Building the report"]
     assert job["status"] == "done" and "root" in job["ui_spec"]
     assert job["result"] == {
@@ -314,13 +277,21 @@ def test_the_real_graph_reports_the_nodes_it_runs(start_app, fake_llm):
 
 def test_the_state_adds_up_what_each_model_call_used(fake_llm):
     fake_llm(
+        call("load_document"),
+        call("validate_document"),
         DocumentCheck(is_coa=True, reason="ok"),
+        call("get_document_data"),
         schema.CoAData(header=schema.CoAHeader(product_code="XX-1"), tests=[]),  # no plant spec for this code: the comparison is skipped
+        call("load_plant_spec"),
+        call("write_summary"),
+        call("render_ui"),
         '{"root": "a", "elements": {"a": {"type": "Text", "props": {"text": "hi"}, "children": []}}}',
+        "Non-conforming.",
     )
     values = graph.compile().invoke({"document_path": str(DOCS_DIR / "sample_coa_citric_acid.pdf")})
-    assert values["cost"] == pytest.approx(3 * CALL_USAGE["cost"])  # validation, extraction and the report
-    assert (values["input_tokens"], values["output_tokens"]) == (3 * CALL_USAGE["input_tokens"], 3 * CALL_USAGE["output_tokens"])
+    calls = 10  # the model's 7 answers (6 tool calls and the last answer), the validation, the extraction and the report
+    assert values["cost"] == pytest.approx(calls * CALL_USAGE["cost"])
+    assert (values["input_tokens"], values["output_tokens"]) == (calls * CALL_USAGE["input_tokens"], calls * CALL_USAGE["output_tokens"])
 
 
 def interrupted_job(directory, **compile_options):
@@ -335,28 +306,28 @@ def interrupted_job(directory, **compile_options):
 
 
 def test_a_job_the_restart_interrupted_resumes_after_its_last_finished_node(start_app, tmp_path, fake_llm):
-    llm = fake_llm(DocumentCheck(is_coa=False, reason="It is an invoice."))  # a second model call would run out of responses
-    job_id = interrupted_job(tmp_path, interrupt_after=["validate_document"])  # it got through validate_document
+    llm = fake_llm(*NOT_A_COA_RUN)
+    job_id = interrupted_job(tmp_path, interrupt_after=["tools"])  # it got through the first tools node, load_document
 
     job = wait_for_end(start_app(), job_id)
 
     assert job["status"] == "done" and "root" in job["ui_spec"]
-    assert job["statuses"] == ["Building the report"]  # only the node after the checkpoint ran again
-    assert llm.calls == 1  # the validation of the first run was not repeated
+    assert job["statuses"] == ["Checking it is a CoA", "Building the report"]  # only what came after the checkpoint ran again
+    assert llm.responses == []  # every answer was used once: nothing of the first run was asked again
 
 
 def test_a_job_whose_run_finished_before_the_restart_is_done_without_running_again(start_app, tmp_path, fake_llm):
-    llm = fake_llm(DocumentCheck(is_coa=False, reason="It is an invoice."))
+    llm = fake_llm(*NOT_A_COA_RUN)
     job_id = interrupted_job(tmp_path)  # the graph finished, the process died before the job was marked done
 
     job = wait_for_end(start_app(), job_id)
 
     assert job["status"] == "done" and "root" in job["ui_spec"]
-    assert job["statuses"] == [] and llm.calls == 1
+    assert job["statuses"] == [] and llm.responses == []
 
 
 def test_an_interrupted_job_without_a_checkpoint_starts_over(start_app, tmp_path, fake_llm):
-    fake_llm(DocumentCheck(is_coa=False, reason="It is an invoice."))
+    fake_llm(*NOT_A_COA_RUN)
     store = Jobs(tmp_path)
     job_id = store.create("coa.pdf", io.BytesIO(CITRIC_ACID_PDF))
     store.start(job_id)
