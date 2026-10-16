@@ -29,6 +29,9 @@ ADDED_COLUMNS = {
     "decided_at": "INTEGER",
     "reason": "TEXT",
     "owner": "TEXT",
+    "input_tokens": "INTEGER",
+    "output_tokens": "INTEGER",
+    "cost_usd": "REAL",
 }
 # what a listing returns: everything but the (large) spec
 SUMMARY = "id, filename, status, statuses, error, started_at, " + ", ".join(ADDED_COLUMNS)
@@ -36,6 +39,12 @@ SUMMARY = "id, filename, status, statuses, error, started_at, " + ", ".join(ADDE
 
 def _now() -> int:
     return int(time.time() * 1000)
+
+
+def _usage_columns(usage: dict) -> tuple:
+    """The run's totals from the agent's state, as the usage columns hold them. These cover the whole run, restarts included, because
+    the checkpoint adds the model calls up; a run that made no call yet has none (null)."""
+    return usage.get("input_tokens"), usage.get("output_tokens"), usage.get("cost")
 
 
 def _job(row: sqlite3.Row) -> dict:
@@ -108,9 +117,12 @@ class Jobs:
     def add_status(self, job_id: str, text: str) -> None:
         self._execute("UPDATE jobs SET statuses = json_insert(statuses, '$[#]', ?) WHERE id = ?", (text, job_id))
 
-    def finish(self, job_id: str, ui_spec: dict, result: dict | None) -> None:
-        sql = "UPDATE jobs SET status = 'done', ui_spec = ?, result = ?, finished_at = ? WHERE id = ?"
-        self._execute(sql, (json.dumps(ui_spec), None if result is None else json.dumps(result), _now(), job_id))
+    def finish(self, job_id: str, ui_spec: dict, result: dict | None, usage: dict) -> None:
+        sql = (
+            "UPDATE jobs SET status = 'done', ui_spec = ?, result = ?, finished_at = ?, "
+            "input_tokens = ?, output_tokens = ?, cost_usd = ? WHERE id = ?"
+        )
+        self._execute(sql, (json.dumps(ui_spec), None if result is None else json.dumps(result), _now(), *_usage_columns(usage), job_id))
 
     def decide(self, job_id: str, decision: str, by: str, reason: str) -> bool:
         """Record a person's decision on a finished job. False if the job is not done or already has a final decision."""
@@ -120,8 +132,9 @@ class Jobs:
         )
         return bool(self._execute(sql, (decision, by, _now(), reason, job_id)))  # one statement: two people cannot both win
 
-    def fail(self, job_id: str, message: str) -> None:
-        self._execute("UPDATE jobs SET status = 'error', error = ?, finished_at = ? WHERE id = ?", (message, _now(), job_id))
+    def fail(self, job_id: str, message: str, usage: dict) -> None:
+        sql = "UPDATE jobs SET status = 'error', error = ?, finished_at = ?, input_tokens = ?, output_tokens = ?, cost_usd = ? WHERE id = ?"
+        self._execute(sql, (message, _now(), *_usage_columns(usage), job_id))
 
     def requeue_unfinished(self) -> list[str]:
         """After a restart: the jobs that were running go back to queued. Returns the ids of all queued jobs, oldest first."""

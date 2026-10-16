@@ -6,6 +6,7 @@ import erp
 from agent import agent
 from agent.prompts import RENDER_UI_PROMPT
 from schema import schema
+from tests.conftest import CALL_USAGE
 
 PLANT_SPEC = {
     "tests": [
@@ -32,6 +33,7 @@ def test_issues_are_derived_from_non_pass_checks(fake_llm):
     assert llm.calls == 1
     assert [c["verdict"] for c in out["test_checks"]] == ["pass", "fail"]
     assert [(i["test"], i["kind"], i["severity"]) for i in out["issues"]] == [("Water", "non_conforming", "critical")]
+    assert {k: out[k] for k in CALL_USAGE} == CALL_USAGE
 
 
 def test_review_verdict_becomes_warning(fake_llm):
@@ -61,6 +63,8 @@ def test_retry_recovers_when_second_response_is_complete(fake_llm):
     out = agent.compare_specs(STATE)
     assert llm.calls == 2
     assert out["issues"] == []
+    assert out["cost"] == 2 * CALL_USAGE["cost"]  # the retry is paid for too
+    assert out["input_tokens"] == 2 * CALL_USAGE["input_tokens"]
 
 
 def test_unknown_product_code_records_issue_and_skips_comparison(monkeypatch, tmp_path):
@@ -90,12 +94,15 @@ def test_render_ui_parses_the_spec_even_inside_code_fences(fake_llm):
     out = agent.render_ui(STATE_WITH_MESSAGE)
     assert out["ui_spec"]["root"] == "a"
     assert llm.calls == 1
+    assert out["cost"] == CALL_USAGE["cost"]
 
 
 def test_render_ui_retries_once_on_invalid_json(fake_llm):
     llm = fake_llm("not json", VALID_SPEC)
-    assert agent.render_ui(STATE_WITH_MESSAGE)["ui_spec"]["root"] == "a"
+    out = agent.render_ui(STATE_WITH_MESSAGE)
+    assert out["ui_spec"]["root"] == "a"
     assert llm.calls == 2
+    assert (out["cost"], out["output_tokens"]) == (2 * CALL_USAGE["cost"], 2 * CALL_USAGE["output_tokens"])
 
 
 def test_render_ui_falls_back_to_an_error_alert(fake_llm):
@@ -109,6 +116,10 @@ def test_render_ui_sends_the_prompt_and_the_last_message_to_the_model(fake_llm):
     state = {"messages": [AIMessage("first"), AIMessage("last message")], "issues": []}
     agent.render_ui(state)
     assert llm.prompts == [f"{RENDER_UI_PROMPT}\nlast message"]
+
+
+def test_a_call_without_usage_or_cost_adds_nothing():
+    assert agent._usage(AIMessage("ok")) == {"cost": 0.0, "input_tokens": 0, "output_tokens": 0}
 
 
 def test_write_summary_puts_the_outcome_and_the_data_in_the_last_message():

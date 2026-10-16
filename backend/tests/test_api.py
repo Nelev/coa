@@ -13,7 +13,9 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 import main
 from agent.agent import DOCS_DIR, graph
 from jobs import Jobs
+from schema import schema
 from schema.schema import DocumentCheck
+from tests.conftest import CALL_USAGE
 
 RESULT = {
     "outcome": "Conforming",
@@ -22,6 +24,7 @@ RESULT = {
     "lot": "L1",
     "supplier": "Alpina",
 }
+USAGE = {"cost": 0.0014, "input_tokens": 140, "output_tokens": 30}  # what a run's state holds once its model calls are added up
 SPEC = {"root": "a", "elements": {"a": {"type": "Text", "props": {"text": "hi"}, "children": []}}}
 CITRIC_ACID_PDF = (DOCS_DIR / "sample_coa_citric_acid.pdf").read_bytes()
 
@@ -36,7 +39,7 @@ class FakeAgent:
 
     def get_state(self, config):
         done = config["configurable"]["thread_id"] in self.finished and self.spec is not None
-        return SimpleNamespace(values={"ui_spec": self.spec, "result": RESULT} if done else {})
+        return SimpleNamespace(values={"ui_spec": self.spec, "result": RESULT, **USAGE} if done else {})
 
     def stream(self, inputs, config, stream_mode):
         assert stream_mode == "custom"
@@ -164,6 +167,51 @@ def test_an_agent_failure_ends_the_job_with_an_error(start_app, monkeypatch):
     assert job["finished_at"] and job["result"] is None
 
 
+def usage_of(job):
+    return job["input_tokens"], job["output_tokens"], job["cost_usd"]
+
+
+def test_a_finished_job_lists_what_its_model_calls_used(start_app, monkeypatch):
+    client = start_app()
+    monkeypatch.setattr(main, "agent_app", FakeAgent("Reading the PDF"))
+
+    job = wait_for_end(client, submit(client)["id"])
+
+    assert usage_of(job) == (140, 30, 0.0014)
+    assert usage_of(next(listed for listed in client.get("/jobs").json() if listed["id"] == job["id"])) == (140, 30, 0.0014)
+
+
+def test_a_failed_job_keeps_what_the_calls_before_the_failure_used(start_app, monkeypatch):
+    class FailingAfterCalls(FakeAgent):
+        def get_state(self, config):
+            return SimpleNamespace(values=USAGE)
+
+        def play(self, inputs):
+            raise RuntimeError("model unavailable")
+            yield
+
+    client = start_app()
+    monkeypatch.setattr(main, "agent_app", FailingAfterCalls())
+
+    job = wait_for_end(client, submit(client)["id"])
+
+    assert job["status"] == "error" and usage_of(job) == (140, 30, 0.0014)
+
+
+def test_a_job_that_failed_before_any_call_has_no_usage(start_app, monkeypatch):
+    class FailingEarly(FakeAgent):
+        def play(self, inputs):
+            raise RuntimeError("cannot read the PDF")
+            yield
+
+    client = start_app()
+    monkeypatch.setattr(main, "agent_app", FailingEarly())
+
+    job = wait_for_end(client, submit(client)["id"])
+
+    assert job["status"] == "error" and usage_of(job) == (None, None, None)
+
+
 def test_an_agent_that_ends_without_a_report_is_an_error(start_app, monkeypatch):
     client = start_app()
     monkeypatch.setattr(main, "agent_app", FakeAgent("Reading the PDF", spec=None))
@@ -262,6 +310,17 @@ def test_the_real_graph_reports_the_nodes_it_runs(start_app, fake_llm):
         "lot": None,
         "supplier": None,
     }
+
+
+def test_the_state_adds_up_what_each_model_call_used(fake_llm):
+    fake_llm(
+        DocumentCheck(is_coa=True, reason="ok"),
+        schema.CoAData(header=schema.CoAHeader(product_code="XX-1"), tests=[]),  # no plant spec for this code: the comparison is skipped
+        '{"root": "a", "elements": {"a": {"type": "Text", "props": {"text": "hi"}, "children": []}}}',
+    )
+    values = graph.compile().invoke({"document_path": str(DOCS_DIR / "sample_coa_citric_acid.pdf")})
+    assert values["cost"] == pytest.approx(3 * CALL_USAGE["cost"])  # validation, extraction and the report
+    assert (values["input_tokens"], values["output_tokens"]) == (3 * CALL_USAGE["input_tokens"], 3 * CALL_USAGE["output_tokens"])
 
 
 def interrupted_job(directory, **compile_options):

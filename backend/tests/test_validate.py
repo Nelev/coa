@@ -2,6 +2,7 @@ import pytest
 
 from agent import agent
 from schema.schema import DocumentCheck
+from tests.conftest import CALL_USAGE
 
 
 def verdict(is_coa, reason="reason"):
@@ -11,7 +12,7 @@ def verdict(is_coa, reason="reason"):
 def test_a_coa_continues_to_extraction(fake_llm):
     fake_llm(verdict(True))
     out = agent.validate_document({"document_text": "Certificate of Analysis ..."})
-    assert out == {}
+    assert out == CALL_USAGE  # no issue, only what the call used
     assert agent.route_after_validation(out) == "get_document_data"
 
 
@@ -26,6 +27,7 @@ def test_a_pdf_without_text_is_rejected_without_calling_the_model(monkeypatch):
     monkeypatch.setattr(agent, "get_llm", lambda: pytest.fail("the model must not be called"))
     out = agent.validate_document({"document_text": "  \n"})
     assert "no extractable text" in out["issues"][0]["message"]
+    assert out["cost"] == 0  # no call, no cost
 
 
 def test_only_the_start_of_a_long_document_is_sent(fake_llm):

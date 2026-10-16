@@ -2,7 +2,7 @@ import logging
 import os
 import queue
 import threading
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -34,6 +34,7 @@ def run_job(job_id: str) -> None:
     that a restart interrupted continues after its last finished node instead of starting over.
     """
     config = {"configurable": {"thread_id": job_id}}
+    values = {}
     try:
         resume = bool(agent_app.get_state(config).values)  # a checkpoint exists: continue after it (nothing runs if the run had finished)
         store.start(job_id, keep_statuses=resume)
@@ -43,9 +44,12 @@ def run_job(job_id: str) -> None:
         values = agent_app.get_state(config).values  # the last nodes' output, saved in the checkpoint
         if values.get("ui_spec") is None:
             raise RuntimeError("the agent finished without a report")
-        store.finish(job_id, values["ui_spec"], values.get("result"))
+        store.finish(job_id, values["ui_spec"], values.get("result"), values)
     except Exception as error:
-        store.fail(job_id, str(error) or type(error).__name__)
+        if not values:  # the run failed before its state was read; it still paid for the calls it made
+            with suppress(Exception):
+                values = agent_app.get_state(config).values
+        store.fail(job_id, str(error) or type(error).__name__, values)
     else:  # outside the try: a mail that cannot be sent must not turn a finished job into a failed one
         if (values.get("result") or {}).get("outcome") == NON_CONFORMING:
             try:

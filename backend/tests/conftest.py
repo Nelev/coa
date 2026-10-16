@@ -1,12 +1,19 @@
-from types import SimpleNamespace
-
 import pytest
+from langchain_core.messages import AIMessage
 from pydantic import BaseModel
 
 import auth
 import main
 from agent import agent
 from schema import schema
+
+CALL_USAGE = {"cost": 0.001, "input_tokens": 10, "output_tokens": 5}  # what every fake model call reports
+
+
+def reply(content=""):
+    """A chat reply carrying the usage and the OpenRouter cost of CALL_USAGE."""
+    usage = {"input_tokens": CALL_USAGE["input_tokens"], "output_tokens": CALL_USAGE["output_tokens"], "total_tokens": 0}
+    return AIMessage(content, usage_metadata=usage, response_metadata={"token_usage": {"cost": CALL_USAGE["cost"]}})
 
 
 class FakeLLM:
@@ -20,8 +27,9 @@ class FakeLLM:
     def calls(self):
         return len(self.prompts)
 
-    def with_structured_output(self, _schema):
-        return self
+    def with_structured_output(self, _schema, include_raw=False):
+        assert include_raw, "the agent reads the call's usage from the raw message"
+        return _Structured(self)
 
     def invoke(self, prompt):
         self.prompts.append(prompt)
@@ -29,7 +37,15 @@ class FakeLLM:
         if isinstance(response, list):  # a list of checks is a comparison result
             return schema.ComparisonResult(checks=response)
         # a model instance is a structured result; a string is a raw chat reply
-        return response if isinstance(response, BaseModel) else SimpleNamespace(content=response)
+        return response if isinstance(response, BaseModel) else reply(response)
+
+
+class _Structured:
+    def __init__(self, llm):
+        self.llm = llm
+
+    def invoke(self, prompt):
+        return {"raw": reply(), "parsed": self.llm.invoke(prompt), "parsing_error": None}
 
 
 @pytest.fixture
