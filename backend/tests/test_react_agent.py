@@ -31,9 +31,9 @@ def tool_messages(out):
     return [(m.name, m.content) for m in out["messages"] if isinstance(m, ToolMessage)]
 
 
-def check_sequence(verdict, question=None):
+def check_sequence(verdict, **flags):
     """The model's answers for a whole check on a CoA whose one test gets `verdict`, tools' own model calls in between."""
-    check = schema.TestCheck(test="Appearance", verdict=verdict, reason="Because.", question=question)
+    check = schema.TestCheck(test="Appearance", verdict=verdict, reason="Because.", **flags)
     return [
         call("load_document"),
         call("validate_document"),
@@ -176,10 +176,10 @@ def test_a_certificate_without_a_product_code_does_not_query_the_erp(fake_llm, m
     assert run()["issues"][0]["kind"] == "missing_plant_spec"
 
 
-# a run that a person's answer continues: the graph needs a checkpointer to pause
-QUESTION = "The CoA says Appearance is 'complies (ppb)'. Is the unit right?"
+# a check the model flagged as unsure pauses the run for a person; the graph needs a checkpointer to pause
+REASON = "The unit is ppb, the plant expects ppm: it could be a typo."
 COMPARED = 8  # the answers of check_sequence up to and including compare_specs' own model call
-UNTIL_COMPARE = check_sequence("review", QUESTION)[:COMPARED]
+UNTIL_COMPARE = check_sequence("review", unsure=True, unsure_reason=REASON)[:COMPARED]
 
 
 def paused_run():
@@ -190,12 +190,13 @@ def paused_run():
     return checked, config, out
 
 
-def test_a_review_with_a_question_pauses_the_run_for_a_person(fake_llm, monkeypatch):
+@pytest.mark.parametrize("verdict", ["review", "pass"])  # a flag sends the check to a person whatever its verdict
+def test_a_check_flagged_unsure_pauses_the_run_for_a_person(fake_llm, monkeypatch, verdict):
     monkeypatch.setattr(erp, "get_material", lambda code: MATERIAL)
-    fake_llm(*UNTIL_COMPARE, call("resolve_questions"))
+    fake_llm(*check_sequence(verdict, unsure=True, unsure_reason=REASON)[:COMPARED], call("resolve_questions"))
     checked, config, out = paused_run()
     (paused,) = out["__interrupt__"]
-    assert [q["question"] for q in paused.value["questions"]] == [QUESTION]
+    assert [q["reason"] for q in paused.value["questions"]] == [REASON]
     assert paused.value["questions"][0]["test"] == "Appearance"
     assert checked.get_state(config).next == ("tools",)
     assert "result" not in out
@@ -211,9 +212,7 @@ def test_the_answer_judges_the_test_again_and_the_run_goes_on(fake_llm, monkeypa
     assert out["result"]["outcome"] == "Conforming"
     assert [c["verdict"] for c in out["test_checks"]] == ["pass"]
     assert out["issues"] == [] and out["open_questions"] == []
-    assert out["clarifications"] == [
-        {"test": "Appearance", "question": QUESTION, "answer": "The unit is a typo, it is ppm.", "by": "QA Anna"}
-    ]
+    assert out["clarifications"] == [{"test": "Appearance", "reason": REASON, "answer": "The unit is a typo, it is ppm.", "by": "QA Anna"}]
     with_answer = [str(p) for p in llm.prompts if "The unit is a typo, it is ppm." in str(p)]
     assert len(with_answer) == 2  # the second judgement, and the report prompt that shows what the person answered
     assert "authoritative" in with_answer[0] and "Resolved by a person" in with_answer[1]
@@ -221,7 +220,7 @@ def test_the_answer_judges_the_test_again_and_the_run_goes_on(fake_llm, monkeypa
     assert mails == []
 
 
-def test_a_question_left_unanswered_stays_a_review(fake_llm, monkeypatch):
+def test_a_flagged_check_left_unanswered_keeps_its_verdict(fake_llm, monkeypatch):
     monkeypatch.setattr(erp, "get_material", lambda code: MATERIAL)
     fake_llm(*UNTIL_COMPARE, call("resolve_questions"), call("write_summary"), call("render_ui"), SPEC, DONE)
     checked, config, _ = paused_run()
@@ -230,7 +229,7 @@ def test_a_question_left_unanswered_stays_a_review(fake_llm, monkeypatch):
     assert "clarifications" not in out
 
 
-def test_the_summary_waits_for_the_open_questions(fake_llm, monkeypatch):
+def test_the_summary_waits_for_the_flagged_checks(fake_llm, monkeypatch):
     monkeypatch.setattr(erp, "get_material", lambda code: MATERIAL)
     fake_llm(*UNTIL_COMPARE, call("write_summary"), call("resolve_questions"))
     checked, config, _ = paused_run()
@@ -240,9 +239,16 @@ def test_the_summary_waits_for_the_open_questions(fake_llm, monkeypatch):
     assert "result" not in checked.get_state(config).values
 
 
-def test_a_question_on_a_pass_is_not_asked(fake_llm, monkeypatch):
+def test_a_review_that_is_not_flagged_does_not_pause_the_run(fake_llm, monkeypatch):
     monkeypatch.setattr(erp, "get_material", lambda code: MATERIAL)
-    fake_llm(*check_sequence("pass", QUESTION)[:COMPARED], call("resolve_questions"), call("write_summary"), call("render_ui"), SPEC, DONE)
+    fake_llm(*check_sequence("review")[:COMPARED], call("resolve_questions"), call("write_summary"), call("render_ui"), SPEC, DONE)
     out = run()
-    assert out["open_questions"] == []
-    assert ("resolve_questions", "There are no open questions.") in tool_messages(out)
+    assert out["open_questions"] == [] and out["result"]["outcome"] == "Needs review"
+    assert ("resolve_questions", "No check is flagged as unsure.") in tool_messages(out)
+
+
+def test_a_flag_without_a_reason_asks_with_the_reason_of_the_check(fake_llm, monkeypatch):
+    monkeypatch.setattr(erp, "get_material", lambda code: MATERIAL)
+    fake_llm(*check_sequence("pass", unsure=True)[:COMPARED], call("resolve_questions"))
+    _, _, out = paused_run()
+    assert out["__interrupt__"][0].value["questions"][0]["reason"] == "Because."

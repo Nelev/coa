@@ -478,13 +478,13 @@ def test_the_frontend_may_post_json_to_the_decision_endpoint():
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
 
 
-# a run that stops to ask a person: the check of a CoA whose one test is a review with a question
-QUESTION = "The CoA reports Appearance in ppb. Is the unit right?"
+# a run that stops to ask a person: the check of a CoA whose one test the model flags as unsure
+REASON = "The CoA reports Appearance in ppb: it could be a typo for ppm."
 MATERIAL = {
     "name": "Citric Acid",
     "tests": [{"test": "Appearance", "type": "qualitative", "accepted": ["complies"], "requirement": "White"}],
 }
-UNTIL_THE_QUESTION = [
+UNTIL_THE_PAUSE = [
     call("load_document"),
     call("validate_document"),
     DocumentCheck(is_coa=True, reason="ok"),
@@ -492,7 +492,7 @@ UNTIL_THE_QUESTION = [
     CoAData(header=CoAHeader(product_code="CA-ANH-25", lot_number="L1"), tests=[schema.TestResult(test="Appearance", result="complies")]),
     call("load_plant_spec"),
     call("compare_specs"),
-    [schema.TestCheck(test="Appearance", verdict="review", reason="Unit differs.", question=QUESTION)],
+    [schema.TestCheck(test="Appearance", verdict="review", reason="Unit differs.", unsure=True, unsure_reason=REASON)],
     call("resolve_questions"),
 ]
 AFTER_THE_ANSWER = [
@@ -509,7 +509,7 @@ ANSWER = {"answers": {"Appearance": "The unit is a typo."}, "by": "QA Anna"}
 def asking(start_app, monkeypatch, fake_llm):
     """A running app and a job whose agent has stopped to ask a person; the model's remaining answers are queued."""
     monkeypatch.setattr(erp, "get_material", lambda code: MATERIAL)
-    llm = fake_llm(*UNTIL_THE_QUESTION, *AFTER_THE_ANSWER)
+    llm = fake_llm(*UNTIL_THE_PAUSE, *AFTER_THE_ANSWER)
     client = start_app(max_runs=1)
     job_id = submit(client, CITRIC_ACID_PDF)["id"]
     return client, wait_for_status(client, job_id, "needs_input"), llm
@@ -517,7 +517,7 @@ def asking(start_app, monkeypatch, fake_llm):
 
 def test_a_run_that_asks_a_person_waits_with_its_question(asking):
     _, job, _ = asking
-    assert job["question"]["questions"][0]["question"] == QUESTION and job["question"]["id"]
+    assert job["question"]["questions"][0]["reason"] == REASON and job["question"]["id"]
     assert job["finished_at"] is None and job["ui_spec"] is None and job["answer"] is None
     assert job["statuses"][-1] == "Comparing results with the specification"
 

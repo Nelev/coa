@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 
 type Ask = Question["questions"][number];
 
-// one question of the agent: the test, the figures it is about, and a field for the answer
+// one check the agent is unsure of: the test, why, the figures it is about, and a field for the answer
 function QuestionField({ ask, value, onChange }: { ask: Ask; value: string; onChange: (value: string) => void }) {
   const id = useId();
   const figures = [ask.supplier_result && `CoA: ${ask.supplier_result}`, ask.plant_requirement && `Plant requires: ${ask.plant_requirement}`]
@@ -20,15 +20,22 @@ function QuestionField({ ask, value, onChange }: { ask: Ask; value: string; onCh
     <div className="flex flex-col gap-1.5">
       <label htmlFor={id} className="text-sm font-medium">
         {ask.test}
-        <span className="block font-normal text-muted-foreground">{ask.question}</span>
+        <span className="block font-normal text-muted-foreground">{ask.reason}</span>
       </label>
       {figures && <p className="text-xs text-subtle-foreground">{figures}</p>}
-      <textarea id={id} value={value} onChange={(event) => onChange(event.target.value)} rows={2} placeholder="Your answer" className={FIELD} />
+      <textarea
+        id={id}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        rows={2}
+        placeholder="Your review: what is right, or what to do"
+        className={FIELD}
+      />
     </div>
   );
 }
 
-// What a paused agent asks. The run is stopped until a person answers: a test left unanswered stays a review. Nothing is greyed out; sending
+// What a paused agent asks. The run is stopped until a person answers: a test left unanswered keeps the agent's verdict. Nothing is greyed out; sending
 // no answer at all is said, not refused by a dead button.
 export function AnswerPanel({ run }: { run: Run }) {
   const { answer } = useReport();
@@ -60,12 +67,12 @@ export function AnswerPanel({ run }: { run: Run }) {
   }
 
   return (
-    <section aria-label="Question from the agent" className="flex max-w-3xl flex-col gap-4 rounded-xl bg-card p-5 ring-1 ring-warning/40">
+    <section aria-label="Checks the agent is unsure of" className="flex max-w-3xl flex-col gap-4 rounded-xl bg-card p-5 ring-1 ring-warning/40">
       <div className="flex flex-col gap-1">
-        <h2 className="text-sm font-semibold">The agent needs your answer</h2>
+        <h2 className="text-sm font-semibold">The agent is not sure and needs your review</h2>
         <p className="text-sm text-muted-foreground">
-          It stopped because it cannot settle {asks.length === 1 ? "this test" : "these tests"} alone. It continues once you answer; a test you do not
-          answer stays a review.
+          It flagged {asks.length === 1 ? "this test" : "these tests"} as unsure and stopped. It continues once you answer; a test you do not answer
+          keeps the agent's verdict.
         </p>
       </div>
       {asks.map((ask) => (
@@ -82,7 +89,7 @@ export function AnswerPanel({ run }: { run: Run }) {
       <ReviewerSelect label="Answering as" by={by} onChange={setBy} />
       {empty ? (
         <p role="alert" className="text-xs font-medium text-destructive">
-          Write an answer, or choose to leave the tests for review.
+          Write an answer, or choose to keep the agent's verdicts.
         </p>
       ) : null}
       {error ? <Problem compact>{error}. Nothing was sent; you can try again.</Problem> : null}
@@ -91,7 +98,7 @@ export function AnswerPanel({ run }: { run: Run }) {
           Send answer
         </Button>
         <Button variant="outline" disabled={pending} onClick={() => void send({})}>
-          Leave for review
+          Keep the agent's verdicts
         </Button>
       </div>
     </section>

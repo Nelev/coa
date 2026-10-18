@@ -159,7 +159,7 @@ def get_pdf(job_id: str):
 
 
 class Answer(BaseModel):
-    answers: dict[str, str]  # test name -> the answer; a test left out or blank stays a review
+    answers: dict[str, str]  # test name -> the answer; a test left out or blank keeps the agent's verdict
     by: str
 
 

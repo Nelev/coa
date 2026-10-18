@@ -8,7 +8,7 @@ vi.mock("@/components/toaster", () => ({ useToast: () => ({ toast: vi.fn(), dism
 
 const ask = {
   test: "Lead (Pb)",
-  question: "The CoA reports Lead in ppb. Is the unit right?",
+  reason: "The CoA reports Lead in ppb; it could be a typo for ppm.",
   supplier_result: "0.2 ppb",
   plant_requirement: "max 0.3 ppm",
 };
@@ -24,10 +24,10 @@ const base: Run = {
 const panel = (run: Partial<Run> = {}) => renderToStaticMarkup(<AnswerPanel run={{ ...base, ...run }} />);
 
 describe("AnswerPanel", () => {
-  it("asks each question with its test and the figures it is about", () => {
+  it("shows each flagged check with its reason and the figures it is about", () => {
     const html = panel();
     expect(html).toContain("Lead (Pb)");
-    expect(html).toContain("Is the unit right?");
+    expect(html).toContain("could be a typo for ppm");
     expect(html).toContain("CoA: 0.2 ppb · Plant requires: max 0.3 ppm");
     expect(html.match(/<textarea/g)).toHaveLength(2);
     expect(html).toContain("these tests");
@@ -39,10 +39,10 @@ describe("AnswerPanel", () => {
     expect(html).toContain("this test");
   });
 
-  it("offers to answer or to leave the tests for review, neither greyed out, and says who answers", () => {
+  it("offers to answer or to keep the agent's verdicts, neither greyed out, and says who answers", () => {
     const html = panel();
     expect(html).toContain("Send answer");
-    expect(html).toContain("Leave for review");
+    expect(html).toContain("Keep the agent&#x27;s verdicts"); // the markup escapes the apostrophe
     expect(html).toContain("Answering as");
     expect(html).not.toContain('disabled=""');
   });

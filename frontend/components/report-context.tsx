@@ -24,10 +24,10 @@ export type RunResult = {
   supplier: string | null;
 };
 
-// what a paused agent asks a person: one question per test it could not decide, with the figures to answer by
+// what a paused agent asks a person to review: each test it flagged as unsure, with its reason and the figures to answer by
 export type Question = {
   id: string;
-  questions: { test: string; question: string; supplier_result: string | null; plant_requirement: string | null }[];
+  questions: { test: string; reason: string; supplier_result: string | null; plant_requirement: string | null }[];
 };
 
 // statuses: what the agent reported while it worked, in order; the last one is what it is doing now.

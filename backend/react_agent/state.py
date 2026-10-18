@@ -23,8 +23,8 @@ class AgentState(TypedDict):
     tests: list[dict]  # structured CoA rows: test, result, unit, specification, method, status
     plant_spec: dict  # plant requirements for the CoA's product code
     test_checks: list[dict]  # one verdict per plant-required test, with supplier_result and plant_requirement
-    open_questions: list[dict]  # what compare_specs could not decide and a person can: test, question, supplier_result, plant_requirement
-    clarifications: list[dict]  # the questions a person answered: test, question, answer, by
+    open_questions: list[dict]  # flagged checks awaiting a person: test, reason, supplier_result, plant_requirement
+    clarifications: list[dict]  # what a person answered about the flagged checks: test, reason, answer, by
     ui_spec: dict  # json-render spec of the report page, rendered by the frontend
     result: dict  # what the job list shows: outcome, verdict counts, product, lot and supplier
     is_running: bool
