@@ -16,6 +16,7 @@ and checks the reported results against the **plant's own specification** for th
 | Plant checks beyond the test table (`approved_suppliers`, `min_remaining_shelf_life_days` in the ERP data) | **not checked**: the data is there, nothing reads it (see [Known limitations](#known-limitations)) |
 | Two implementations of the agent, built for development and learning: a fixed graph (`backend/agent/`) and a ReAct agent (`backend/react_agent/`); the API runs the ReAct one | done |
 | The agent is a ReAct loop of two nodes, `agent` (the model, with the tools bound) and `tools` (runs what it called); every step of the check is a tool, and the model picks the next one | done |
+| Tracing of every run in [LangSmith](https://smith.langchain.com/) | done, opt-in through environment variables only (no code): see [Tracing](#tracing-langsmith) |
 | Mail when a lot is non-conforming | done (SMTP, sent by the `notify_quality_team` tool, which refuses any other outcome; a failure is logged as a warning and never fails the job) |
 | API: `POST /jobs` queues the agent on an uploaded PDF; `GET /jobs` and `GET /jobs/{id}` return the progress, the UI spec and the tokens and cost (`input_tokens`, `output_tokens`, `cost_usd`) of the run's model calls; `GET /jobs/{id}/pdf` returns the certificate; `POST /jobs/{id}/answer` answers what a paused agent asks (the job is `needs_input` and carries its `question`); `POST /jobs/{id}/decision` records a person's decision | done (jobs are kept in SQLite and survive restarts; CORS allows `http://localhost:3000` unless `CORS_ORIGINS` (comma-separated) says otherwise; every `/jobs` endpoint requires a WorkOS access token, but any signed-in person can see and decide every job) |
 | Frontend (Next.js + shadcn dashboard) | WorkOS AuthKit sign-in; light, dark or system theme (user menu). `/login` is the front door: a card that continues to WorkOS sign-in, over an animated pharmaceutical line (vials scanned and tagged PASS, REVIEW or FAIL, and drifting molecules; still for reduced motion), and signed-out visitors are sent there with the page they asked for. `/` is an overview: counts that double as filters (all, needs attention, in progress, conforming, awaiting decision), search, and a table you can sort by its headers, with live progress per run, how long each took, and its cost and tokens; the filter and sort are in the address, and `j`/`k`, `/` and `?` work from the keyboard. `/runs/[id]` opens with the lot, the verdict and a bar of the test results, then the report (with an Activity tab of the steps, and links to each finding), a link to open the CoA, and the decision: approve, put on hold or reject, as one of two demo reviewers, with a reason, in a column beside the report (a bottom sheet on a phone); rejecting, holding or overriding the agent asks for confirmation first, and toasts say what was recorded. Upload with the button or by dropping PDFs anywhere; runs come back after a reload |
@@ -283,9 +284,30 @@ Every setting, for reference (the backend reads the environment and `backend/.en
 | `MAX_CONCURRENT_RUNS` | backend | worker threads, default 2 |
 | `JOBS_DIR` | backend | where `jobs.db`, `checkpoints.db` and `uploads/` live, default `backend/data/` |
 | `CORS_ORIGINS` | backend | allowed browser origins, comma-separated, default `http://localhost:3000` |
+| `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_ENDPOINT`, `LANGSMITH_AGENT_ID`, `LANGSMITH_AGENT_ENVIRONMENT` | backend | optional: send a trace of every run to LangSmith, see [Tracing](#tracing-langsmith) |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `NOTIFY_EMAIL`, `APP_URL` | backend | the non-conforming mail, see above |
 | `WORKOS_API_KEY`, `WORKOS_COOKIE_PASSWORD`, `NEXT_PUBLIC_WORKOS_REDIRECT_URI` | frontend | WorkOS AuthKit (the cookie password is 32+ characters) |
 | `NEXT_PUBLIC_API_URL` | frontend | the API's address, default `http://localhost:8000` |
+
+### Tracing (LangSmith)
+
+Every run can be traced in [LangSmith](https://smith.langchain.com/): each graph step, each model call (prompt, reply, tokens, latency) and
+each tool call, so you can see why the ReAct agent picked a tool, or what a prompt really sent. There is no tracing code: LangChain and LangGraph
+read these variables, and the `langsmith` client comes in with `langchain-core`. Add them to `backend/.env`:
+
+```
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_...                              # a LangSmith API key
+LANGSMITH_ENDPOINT=https://eu.api.smith.langchain.com   # EU region; leave out for the US default
+LANGSMITH_AGENT_ID=...                                  # the agent id from your LangSmith workspace
+LANGSMITH_AGENT_ENVIRONMENT=local                       # labels where the traces come from (local, staging, ...)
+```
+
+- It is **off** unless `LANGSMITH_TRACING=true`; without the variables the app runs as before and sends nothing. `.env` is loaded when the
+  API starts (and by `python -m agent.agent`), so restart after changing it.
+- It applies to both implementations, the API's ReAct runs and the fixed graph's command-line runs.
+- A job's id is its LangGraph `thread_id`, which LangGraph adds to a run's metadata, so look for a job's trace by that id.
+- Traces hold the CoA text and the model's replies. Turn tracing off, or use a workspace the data may go to, when the certificates are confidential.
 
 Run the fixed graph on the sample CoA, or on another PDF (the ReAct agent runs through the API):
 
@@ -415,6 +437,8 @@ its own folder changes. The same steps run locally:
 - An upload is not checked: no size limit, and no check that it is a PDF before a worker picks it up (a non-PDF becomes a failed job).
 - The queue is in memory and per process, and the API must run as one uvicorn worker. Jobs and uploads live in
   `backend/data/` with no cleanup.
+- With LangSmith tracing on, the CoA text and the model's replies leave the machine for LangSmith, and nothing marks which traces belong to a
+  job beyond its `thread_id`; the job and the UI do not link to them.
 - A failed mail is only a log line; nothing on the job or in the UI says that the notification was not sent.
 - Backend dependencies in `requirements.txt` are not pinned (only `PyJWT` has a floor), so installs are not reproducible.
 - `npm audit --omit=dev` reports 7 high-severity findings, all through `shadcn` (a CLI that is listed as a runtime
