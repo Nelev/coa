@@ -5,6 +5,7 @@ import { useId, useRef, useState } from "react";
 
 import { Problem } from "@/components/problem";
 import { type Decision, type Run, useReport } from "@/components/report-context";
+import { FIELD, ReviewerSelect, useReviewer } from "@/components/reviewer-select";
 import { runTitle } from "@/components/run-summary";
 import { DecisionChip } from "@/components/status-chip";
 import { useToast } from "@/components/toaster";
@@ -13,13 +14,6 @@ import { decisionToast, missingReason } from "@/lib/decisions";
 import { formatMoment } from "@/lib/format";
 import { isDecided, requiresReason } from "@/lib/runs";
 import { useOnceOpened } from "@/lib/use-once-opened";
-import { usePersistedChoice } from "@/lib/use-persisted-choice";
-
-// the demo has no login: whoever decides says who they are
-const REVIEWERS = ["QA Anna Rossi", "QC Marco Bianchi"] as const;
-
-const FIELD =
-  "w-full rounded-lg border border-field bg-transparent px-2.5 py-1.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:bg-input/30";
 
 const BUTTONS: { decision: Decision; label: string; variant: "default" | "outline" | "destructive" }[] = [
   { decision: "approved", label: "Approve", variant: "default" },
@@ -49,8 +43,7 @@ const DecisionConfirm = dynamic(() => import("@/components/decision-confirm").th
 function DecisionForm({ run, onDone }: { run: Run; onDone?: () => void }) {
   const { decide } = useReport();
   const { toast } = useToast();
-  // the same person decides next time (WCAG 3.3.7: do not ask for the same thing twice)
-  const [by, setBy] = usePersistedChoice("reviewer", REVIEWERS);
+  const [by, setBy] = useReviewer();
   const [reason, setReason] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
@@ -58,7 +51,7 @@ function DecisionForm({ run, onDone }: { run: Run; onDone?: () => void }) {
   const [missing, setMissing] = useState<Decision | null>(null); // the decision that was pressed without a reason
   const asked = useOnceOpened(asking !== null);
   const reasonField = useRef<HTMLTextAreaElement>(null);
-  const ids = { reason: useId(), by: useId(), hint: useId(), missing: useId() };
+  const ids = { reason: useId(), hint: useId(), missing: useId() };
 
   const overrides = requiresReason("approved", run); // approving needs a reason only when it overrides the agent
 
@@ -97,21 +90,7 @@ function DecisionForm({ run, onDone }: { run: Run; onDone?: () => void }) {
   return (
     <>
       {run.decision === "on_hold" && <Summary run={run} />}
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor={ids.by} className="text-xs font-medium text-muted-foreground">
-          Deciding as
-        </label>
-        <select
-          id={ids.by}
-          value={by}
-          onChange={(event) => setBy(REVIEWERS.find((name) => name === event.target.value) ?? REVIEWERS[0])}
-          className={`${FIELD} h-8 max-w-xs py-0 pointer-coarse:h-10`}
-        >
-          {REVIEWERS.map((name) => (
-            <option key={name}>{name}</option>
-          ))}
-        </select>
-      </div>
+      <ReviewerSelect label="Deciding as" by={by} onChange={setBy} />
       <div className="flex flex-col gap-1.5">
         <label htmlFor={ids.reason} className="text-xs font-medium text-muted-foreground">
           Reason

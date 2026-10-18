@@ -6,7 +6,7 @@ import { RunProgress } from "@/components/run-progress";
 import { DecisionChip, StatusChip } from "@/components/status-chip";
 import { Button } from "@/components/ui/button";
 import { formatCost, formatDuration, formatTokens, relativeTime } from "@/lib/format";
-import { isActive, tokenUsage, totalTests } from "@/lib/runs";
+import { isActive, isWaiting, tokenUsage, totalTests } from "@/lib/runs";
 import { cn } from "@/lib/utils";
 
 // "Citric Acid · Lot L26-09-3315 · Alpina Chemicals", with the parts that exist
@@ -17,6 +17,7 @@ function describe(run: Run): string {
 
 function Verdict({ run }: { run: Run }) {
   if (isActive(run)) return <RunProgress run={run} />;
+  if (isWaiting(run)) return <p className="text-sm text-warning">The agent has a question for you</p>;
   if (run.state === "error") return <p className="text-sm break-words text-destructive md:truncate">{run.message}</p>;
   if (!run.result) return null;
   const { counts, outcome } = run.result;

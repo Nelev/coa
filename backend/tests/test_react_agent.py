@@ -3,14 +3,16 @@ from pathlib import Path
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 
 import erp
 import notify
-from react_agent.react_agent import app
+from react_agent.react_agent import app, graph
 from react_agent.tools import tools
 from schema import schema
 from schema.schema import CoAData, CoAHeader, DocumentCheck
-from tests.conftest import call
+from tests.conftest import CALL_USAGE, call
 
 PDF = str(Path(__file__).resolve().parent.parent / "docs" / "sample_coa_citric_acid.pdf")
 SPEC = json.dumps({"root": "a", "elements": {"a": {"type": "Alert", "props": {}, "children": []}}})
@@ -29,9 +31,9 @@ def tool_messages(out):
     return [(m.name, m.content) for m in out["messages"] if isinstance(m, ToolMessage)]
 
 
-def check_sequence(verdict):
+def check_sequence(verdict, **flags):
     """The model's answers for a whole check on a CoA whose one test gets `verdict`, tools' own model calls in between."""
-    check = schema.TestCheck(test="Appearance", verdict=verdict, reason="Because.")
+    check = schema.TestCheck(test="Appearance", verdict=verdict, reason="Because.", **flags)
     return [
         call("load_document"),
         call("validate_document"),
@@ -142,6 +144,7 @@ def test_the_tools_take_no_arguments_from_the_model():
         "get_document_data",
         "load_plant_spec",
         "compare_specs",
+        "resolve_questions",
         "write_summary",
         "render_ui",
         "notify_quality_team",
@@ -171,3 +174,81 @@ def test_a_certificate_without_a_product_code_does_not_query_the_erp(fake_llm, m
         DONE,
     )
     assert run()["issues"][0]["kind"] == "missing_plant_spec"
+
+
+# a check the model flagged as unsure pauses the run for a person; the graph needs a checkpointer to pause
+REASON = "The unit is ppb, the plant expects ppm: it could be a typo."
+COMPARED = 8  # the answers of check_sequence up to and including compare_specs' own model call
+UNTIL_COMPARE = check_sequence("review", unsure=True, unsure_reason=REASON)[:COMPARED]
+
+
+def paused_run():
+    """Runs a checkpointed graph (the model's answers are queued with fake_llm) until it stops: the graph, its config and the output."""
+    checked = graph.compile(checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": "job1"}}
+    out = checked.invoke({"document_path": PDF, "filename": "lot.pdf", "job_id": "job1"}, config)
+    return checked, config, out
+
+
+@pytest.mark.parametrize("verdict", ["review", "pass"])  # a flag sends the check to a person whatever its verdict
+def test_a_check_flagged_unsure_pauses_the_run_for_a_person(fake_llm, monkeypatch, verdict):
+    monkeypatch.setattr(erp, "get_material", lambda code: MATERIAL)
+    fake_llm(*check_sequence(verdict, unsure=True, unsure_reason=REASON)[:COMPARED], call("resolve_questions"))
+    checked, config, out = paused_run()
+    (paused,) = out["__interrupt__"]
+    assert [q["reason"] for q in paused.value["questions"]] == [REASON]
+    assert paused.value["questions"][0]["test"] == "Appearance"
+    assert checked.get_state(config).next == ("tools",)
+    assert "result" not in out
+
+
+def test_the_answer_judges_the_test_again_and_the_run_goes_on(fake_llm, monkeypatch, mails):
+    monkeypatch.setattr(erp, "get_material", lambda code: MATERIAL)
+    passed = schema.TestCheck(test="Appearance", verdict="pass", reason="The unit was a typo.")
+    llm = fake_llm(*UNTIL_COMPARE, call("resolve_questions"), [passed], call("write_summary"), call("render_ui"), SPEC, DONE)
+    checked, config, _ = paused_run()
+    out = checked.invoke(Command(resume={"answers": {"Appearance": "The unit is a typo, it is ppm."}, "by": "QA Anna"}), config)
+    assert "__interrupt__" not in out
+    assert out["result"]["outcome"] == "Conforming"
+    assert [c["verdict"] for c in out["test_checks"]] == ["pass"]
+    assert out["issues"] == [] and out["open_questions"] == []
+    assert out["clarifications"] == [{"test": "Appearance", "reason": REASON, "answer": "The unit is a typo, it is ppm.", "by": "QA Anna"}]
+    with_answer = [str(p) for p in llm.prompts if "The unit is a typo, it is ppm." in str(p)]
+    assert len(with_answer) == 2  # the second judgement, and the report prompt that shows what the person answered
+    assert "authoritative" in with_answer[0] and "Resolved by a person" in with_answer[1]
+    assert out["input_tokens"] == CALL_USAGE["input_tokens"] * (llm.calls - 1)  # every call but DONE (it reports no usage) counted once
+    assert mails == []
+
+
+def test_a_flagged_check_left_unanswered_keeps_its_verdict(fake_llm, monkeypatch):
+    monkeypatch.setattr(erp, "get_material", lambda code: MATERIAL)
+    fake_llm(*UNTIL_COMPARE, call("resolve_questions"), call("write_summary"), call("render_ui"), SPEC, DONE)
+    checked, config, _ = paused_run()
+    out = checked.invoke(Command(resume={"answers": {"Appearance": "  "}, "by": "QA Anna"}), config)
+    assert out["result"]["outcome"] == "Needs review"
+    assert "clarifications" not in out
+
+
+def test_the_summary_waits_for_the_flagged_checks(fake_llm, monkeypatch):
+    monkeypatch.setattr(erp, "get_material", lambda code: MATERIAL)
+    fake_llm(*UNTIL_COMPARE, call("write_summary"), call("resolve_questions"))
+    checked, config, _ = paused_run()
+    messages = checked.get_state(config).values["messages"]
+    refused = next(m for m in messages if isinstance(m, ToolMessage) and m.name == "write_summary")
+    assert "call resolve_questions first" in refused.content
+    assert "result" not in checked.get_state(config).values
+
+
+def test_a_review_that_is_not_flagged_does_not_pause_the_run(fake_llm, monkeypatch):
+    monkeypatch.setattr(erp, "get_material", lambda code: MATERIAL)
+    fake_llm(*check_sequence("review")[:COMPARED], call("resolve_questions"), call("write_summary"), call("render_ui"), SPEC, DONE)
+    out = run()
+    assert out["open_questions"] == [] and out["result"]["outcome"] == "Needs review"
+    assert ("resolve_questions", "No check is flagged as unsure.") in tool_messages(out)
+
+
+def test_a_flag_without_a_reason_asks_with_the_reason_of_the_check(fake_llm, monkeypatch):
+    monkeypatch.setattr(erp, "get_material", lambda code: MATERIAL)
+    fake_llm(*check_sequence("pass", unsure=True)[:COMPARED], call("resolve_questions"))
+    _, _, out = paused_run()
+    assert out["__interrupt__"][0].value["questions"][0]["reason"] == "Because."

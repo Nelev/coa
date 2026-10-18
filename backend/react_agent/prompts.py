@@ -10,8 +10,10 @@ Work in this order, calling one tool at a time and reading its answer before the
 3. get_document_data, then load_plant_spec.
 4. If load_plant_spec found a plant specification, call compare_specs. If it did not (no product code, or an unknown one),
    skip compare_specs.
-5. write_summary, then render_ui.
-6. If the outcome write_summary reported is "Non-conforming", call notify_quality_team once, after render_ui. For any other outcome do not
+5. If compare_specs reported tests flagged as unsure, call resolve_questions once: it asks a person and waits for the answer. If it
+   reported none, do not call it.
+6. write_summary, then render_ui.
+7. If the outcome write_summary reported is "Non-conforming", call notify_quality_team once, after render_ui. For any other outcome do not
    call it.
 
 Never repeat a step that succeeded, and never guess a value a tool should give you.
@@ -45,6 +47,12 @@ COMPARE_PROMPT = (
     "- A result written as '< x' passes a max limit only if x <= max. Against a min limit it cannot be "
     "confirmed, so the verdict is review.\n"
     "- If the CoA unit differs from the plant unit, the verdict is review. Never convert units silently.\n"
+    "- Whenever you are not sure of a check, set `unsure` to true on it and say why in `unsure_reason`, in one sentence. A review is "
+    "always unsure, since it means you cannot decide: set `unsure` on every review (e.g. a unit that could be a typo, a value that is hard "
+    "to read, a requirement that does not clearly apply). Also set it on a pass or a fail you doubt, and leave it false on one you are "
+    "sure of. A person reviews every unsure check before the report is made.\n"
+    "- When a person's answer to a point you were unsure about is given below, it is authoritative: judge that check with it, and "
+    "leave `unsure` false.\n"
     "- Qualitative tests pass only if the CoA result is one of the accepted words (case-insensitive). "
     "Any other result is review, never an assumed pass.\n"
     "- A plant-required test that is not reported on the CoA is fail, with the reason 'not reported'.\n"
@@ -83,8 +91,8 @@ INPUT
 The text after this prompt is the analysis of one certificate, as JSON: `outcome` ("Conforming", "Needs review" or
 "Non-conforming"), `counts` (how many tests have the verdict `pass`, `fail` and `review`), `header` (the fields of the
 certificate; any may be missing), `tests` (one per test the plant requires: `test`, `verdict`, `supplier_result`,
-`plant_requirement`) and `issues` (`kind`, `severity`, `message`, and `test`, `supplier_result`, `plant_requirement` when
-they apply). Copy every value exactly; never round, convert, translate or invent one. Leave out a field that is missing.
+`plant_requirement`), `issues` (`kind`, `severity`, `message`, and `test`, `supplier_result`, `plant_requirement` when
+they apply) and `clarifications` (what a person answered about a check the agent was unsure of: `test`, `reason`, `answer`, and `by`, who answered). Copy every value exactly; never round, convert, translate or invent one. Leave out a field that is missing.
 
 LAYOUT
 The page fills the full width of the area it is shown in. The root is a vertical Stack with gap "lg", and every vertical
@@ -107,7 +115,9 @@ The root's children are these sections, in this order:
    ones first. The title is the issue's `test`, or "Document" when it has none. The type is "error" for severity
    critical and "warning" otherwise. The message is the issue's message; when the issue has both `supplier_result` and
    `plant_requirement`, append " CoA: <supplier_result>. Plant requires: <plant_requirement>."
-6. Test results, only when `tests` is not empty: a Heading h2 "Test results", then one Table with columns ["Test",
+6. Clarifications, only when `clarifications` is not empty: a Heading h2 "Resolved by a person", then one Alert of type "info"
+   per clarification. The title is its `test`; the message is "<reason> Answer: <answer>" and, when `by` is set, " (<by>)".
+7. Test results, only when `tests` is not empty: a Heading h2 "Test results", then one Table with columns ["Test",
    "Supplier result", "Plant requirement", "Verdict"] and one row per test: failures first, then reviews, then passes, each
    group in the given order. The Verdict cell is "Fail", "Review" or "Pass". A missing supplier result is "not reported".
 """

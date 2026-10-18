@@ -30,9 +30,14 @@ export function nextSort(current: Sort, column: "status" | "name" | "when"): Sor
   return current === "newest" ? "oldest" : "newest";
 }
 
-// queued or being analyzed: the run will still change
+// queued or being analyzed: the run will still change by itself (a waiting one only changes when a person answers)
 export function isActive(run: Run): boolean {
   return run.state === "queued" || run.state === "loading";
+}
+
+// the agent stopped to ask a person: the run is stuck until someone answers
+export function isWaiting(run: Run): boolean {
+  return run.state === "waiting";
 }
 
 // a person has approved or rejected the lot: nothing is left to do with it
@@ -55,8 +60,9 @@ export function filterOf(run: Run): Exclude<Filter, "all" | "decision"> {
   return run.state === "done" && run.result?.outcome === "Conforming" ? "conforming" : "attention"; // a failed run, a non-conforming or unclear certificate
 }
 
-// lower comes first: what is running, then the worst findings, then what is fine
+// lower comes first: what waits for a person's answer (the run is stopped until then), what is running, the worst findings, what is fine
 function urgency(run: Run): number {
+  if (isWaiting(run)) return -1;
   if (run.state === "loading") return 0;
   if (run.state === "queued") return 1;
   if (run.state === "error") return 2;

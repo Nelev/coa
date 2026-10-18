@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { AnswerPanel } from "@/components/answer-panel";
 import { DecisionBar } from "@/components/decision-bar";
 import { DecisionPanel } from "@/components/decision-panel";
 import { Problem } from "@/components/problem";
@@ -17,7 +18,7 @@ import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbP
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { isActive, sortRuns } from "@/lib/runs";
+import { isActive, isWaiting, sortRuns } from "@/lib/runs";
 
 // json-render, its shadcn components and zod are only needed once a report arrives; upload() preloads this chunk.
 const ReportRenderer = dynamic(() => import("@/components/report-renderer").then((m) => m.ReportRenderer));
@@ -79,6 +80,9 @@ function Report({
   retry: () => void;
   showActivity: () => void;
 }) {
+  if (isWaiting(run)) {
+    return <p className="text-sm text-muted-foreground">The agent is waiting for your answer above. The report appears when it has finished.</p>;
+  }
   if (isActive(run)) {
     return (
       <p className="text-sm text-muted-foreground">
@@ -243,6 +247,8 @@ export function RunView({
           </>
         }
       />
+
+      {isWaiting(run) && run.question && <AnswerPanel key={run.question.id} run={run} />}
 
       {/* from lg on, the decision is a column that stays in view beside the report; below, it is a bar at the foot of the screen */}
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">

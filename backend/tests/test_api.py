@@ -10,12 +10,13 @@ import pytest
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+import erp
 import main
 from agent.agent import DOCS_DIR
 from jobs import Jobs
 from react_agent.react_agent import graph
 from schema import schema
-from schema.schema import DocumentCheck
+from schema.schema import CoAData, CoAHeader, DocumentCheck
 from tests.conftest import CALL_USAGE, call
 
 RESULT = {
@@ -49,7 +50,7 @@ class FakeAgent:
 
     def get_state(self, config):
         done = config["configurable"]["thread_id"] in self.finished and self.spec is not None
-        return SimpleNamespace(values={"ui_spec": self.spec, "result": RESULT, **USAGE} if done else {})
+        return SimpleNamespace(values={"ui_spec": self.spec, "result": RESULT, **USAGE} if done else {}, interrupts=())
 
     def stream(self, inputs, config, stream_mode):
         assert stream_mode == "custom"
@@ -75,6 +76,12 @@ def start_app(tmp_path, monkeypatch, signed_in):
         clients.append(client)
         return client
 
+    def stop(client):
+        """Stops the app like a shutdown; start() then starts it again on the same jobs, like a restart."""
+        client.__exit__(None, None, None)
+        clients.remove(client)
+
+    start.stop = stop
     yield start
     for client in clients:
         client.__exit__(None, None, None)
@@ -86,15 +93,20 @@ def submit(client, content=b"%PDF-fake", name="coa.pdf"):
     return response.json()
 
 
-def wait_for_end(client, job_id):
-    """Poll the job like the frontend does, until it is done or failed."""
+def wait_for_status(client, job_id, *statuses):
+    """Poll the job like the frontend does, until it has one of `statuses`."""
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         job = client.get(f"/jobs/{job_id}").json()
-        if job["status"] in ("done", "error"):
+        if job["status"] in statuses:
             return job
         time.sleep(0.01)
-    raise AssertionError(f"job {job_id} did not end: {job}")
+    raise AssertionError(f"job {job_id} is not {statuses}: {job}")
+
+
+def wait_for_end(client, job_id):
+    """Until the job is done or failed."""
+    return wait_for_status(client, job_id, "done", "error")
 
 
 def test_a_job_records_the_status_of_each_node_then_the_ui_spec(start_app, monkeypatch):
@@ -464,3 +476,112 @@ def test_the_frontend_may_post_json_to_the_decision_endpoint():
     response = TestClient(main.app).options("/jobs/abc/decision", headers=headers)
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
+# a run that stops to ask a person: the check of a CoA whose one test the model flags as unsure
+REASON = "The CoA reports Appearance in ppb: it could be a typo for ppm."
+MATERIAL = {
+    "name": "Citric Acid",
+    "tests": [{"test": "Appearance", "type": "qualitative", "accepted": ["complies"], "requirement": "White"}],
+}
+UNTIL_THE_PAUSE = [
+    call("load_document"),
+    call("validate_document"),
+    DocumentCheck(is_coa=True, reason="ok"),
+    call("get_document_data"),
+    CoAData(header=CoAHeader(product_code="CA-ANH-25", lot_number="L1"), tests=[schema.TestResult(test="Appearance", result="complies")]),
+    call("load_plant_spec"),
+    call("compare_specs"),
+    [schema.TestCheck(test="Appearance", verdict="review", reason="Unit differs.", unsure=True, unsure_reason=REASON)],
+    call("resolve_questions"),
+]
+AFTER_THE_ANSWER = [
+    [schema.TestCheck(test="Appearance", verdict="pass", reason="Typo.")],
+    call("write_summary"),
+    call("render_ui"),
+    '{"root": "a", "elements": {"a": {"type": "Text", "props": {"text": "hi"}, "children": []}}}',
+    "Conforming.",
+]
+ANSWER = {"answers": {"Appearance": "The unit is a typo."}, "by": "QA Anna"}
+
+
+@pytest.fixture
+def asking(start_app, monkeypatch, fake_llm):
+    """A running app and a job whose agent has stopped to ask a person; the model's remaining answers are queued."""
+    monkeypatch.setattr(erp, "get_material", lambda code: MATERIAL)
+    llm = fake_llm(*UNTIL_THE_PAUSE, *AFTER_THE_ANSWER)
+    client = start_app(max_runs=1)
+    job_id = submit(client, CITRIC_ACID_PDF)["id"]
+    return client, wait_for_status(client, job_id, "needs_input"), llm
+
+
+def test_a_run_that_asks_a_person_waits_with_its_question(asking):
+    _, job, _ = asking
+    assert job["question"]["questions"][0]["reason"] == REASON and job["question"]["id"]
+    assert job["finished_at"] is None and job["ui_spec"] is None and job["answer"] is None
+    assert job["statuses"][-1] == "Comparing results with the specification"
+
+
+def test_a_waiting_job_does_not_hold_a_worker(asking):
+    client, _, llm = asking
+    llm.responses[0:0] = NOT_A_COA_RUN  # the next job's answers, before the ones the paused job is waiting for
+    other = wait_for_end(client, submit(client, CITRIC_ACID_PDF)["id"])  # the only worker is free: this job runs and ends
+    assert other["status"] == "done"
+
+
+def test_the_answer_continues_the_run(asking):
+    client, job, llm = asking
+    response = client.post(f"/jobs/{job['id']}/answer", json=ANSWER)
+    assert response.status_code == 200 and response.json()["status"] == "queued"
+    done = wait_for_end(client, job["id"])
+    assert done["status"] == "done" and done["result"]["outcome"] == "Conforming"
+    assert done["question"] is None and done["answer"]["by"] == "QA Anna"
+    assert done["statuses"][-3:] == ["Applying the answers", "Summarizing the findings", "Building the report"]
+    assert llm.responses == []  # every answer was used once: nothing before the question was asked again
+
+
+def test_an_answer_is_taken_once(asking):
+    client, job, _ = asking
+    assert client.post(f"/jobs/{job['id']}/answer", json=ANSWER).status_code == 200
+    assert client.post(f"/jobs/{job['id']}/answer", json=ANSWER).status_code == 409
+    wait_for_end(client, job["id"])
+    assert client.post(f"/jobs/{job['id']}/answer", json=ANSWER).status_code == 409
+
+
+def test_an_answer_must_be_from_someone_to_a_question_asked(asking):
+    client, job, _ = asking
+    url = f"/jobs/{job['id']}/answer"
+    assert client.post(url, json={**ANSWER, "by": "  "}).status_code == 422
+    assert client.post(url, json={"answers": {"Lead": "ppm"}, "by": "QA Anna"}).status_code == 422
+    assert client.post("/jobs/nope/answer", json=ANSWER).status_code == 404
+    assert client.get(f"/jobs/{job['id']}").json()["status"] == "needs_input"  # none of them used up the question
+
+
+def test_a_job_that_is_not_waiting_cannot_be_answered(finished):
+    client, job_id = finished
+    assert client.post(f"/jobs/{job_id}/answer", json=ANSWER).status_code == 409
+
+
+def test_a_waiting_job_stays_waiting_after_a_restart(asking, start_app):
+    client, job, llm = asking
+    start_app.stop(client)
+    client = start_app()
+    assert client.get(f"/jobs/{job['id']}").json()["status"] == "needs_input"  # it is not queued again, nor asked again
+    assert len(llm.responses) == len(AFTER_THE_ANSWER)
+    assert client.post(f"/jobs/{job['id']}/answer", json=ANSWER).status_code == 200
+    assert wait_for_end(client, job["id"])["status"] == "done"
+
+
+def test_a_job_answered_before_a_restart_continues_with_that_answer(asking, start_app, tmp_path):
+    client, job, _ = asking
+    start_app.stop(client)
+    Jobs(tmp_path).answer(job["id"], {"for": job["question"]["id"], **ANSWER})  # the process died after saving the answer
+    assert wait_for_end(start_app(), job["id"])["status"] == "done"
+
+
+def test_an_answer_to_another_question_is_not_used(asking, start_app, tmp_path):
+    client, job, _ = asking
+    start_app.stop(client)
+    Jobs(tmp_path).answer(job["id"], {"for": "an-earlier-question", **ANSWER})
+    waiting = wait_for_status(start_app(), job["id"], "needs_input")
+    assert waiting["question"]["id"] == job["question"]["id"] and waiting["answer"] is None  # asked again

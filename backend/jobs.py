@@ -32,6 +32,8 @@ ADDED_COLUMNS = {
     "input_tokens": "INTEGER",
     "output_tokens": "INTEGER",
     "cost_usd": "REAL",
+    "question": "TEXT",  # what a paused run asks a person, as JSON: the interrupt's id and its questions
+    "answer": "TEXT",  # the person's reply to it, as JSON: the interrupt's id it is for, the answers and who gave them
 }
 # what a listing returns: everything but the (large) spec
 SUMMARY = "id, filename, status, statuses, error, started_at, " + ", ".join(ADDED_COLUMNS)
@@ -50,8 +52,9 @@ def _usage_columns(usage: dict) -> tuple:
 def _job(row: sqlite3.Row) -> dict:
     job = dict(row)
     job["statuses"] = json.loads(job["statuses"])
-    if job["result"] is not None:
-        job["result"] = json.loads(job["result"])
+    for column in ("result", "question", "answer"):
+        if job[column] is not None:
+            job[column] = json.loads(job[column])
     if job.get("ui_spec") is not None:
         job["ui_spec"] = json.loads(job["ui_spec"])
     return job
@@ -60,8 +63,8 @@ def _job(row: sqlite3.Row) -> dict:
 class Jobs:
     """The analysis jobs, kept in SQLite under `directory` along with the uploaded PDFs.
 
-    A job is queued, running, done or error; once done it can also carry a person's decision. The table is the source of
-    truth: the in-memory queue in main.py is rebuilt from it.
+    A job is queued, running, needs_input (the agent paused to ask a person), done or error; once done it can also carry a
+    person's decision. The table is the source of truth: the in-memory queue in main.py is rebuilt from it.
     """
 
     def __init__(self, directory: Path):
@@ -112,7 +115,17 @@ class Jobs:
     def start(self, job_id: str, keep_statuses: bool = False) -> None:
         """Mark the job running. A run that starts over drops the statuses of its earlier attempt; one that resumes keeps them."""
         reset = "" if keep_statuses else ", statuses = '[]'"
-        self._execute(f"UPDATE jobs SET status = 'running', started_at = COALESCE(started_at, ?){reset} WHERE id = ?", (_now(), job_id))
+        sql = f"UPDATE jobs SET status = 'running', question = NULL, started_at = COALESCE(started_at, ?){reset} WHERE id = ?"
+        self._execute(sql, (_now(), job_id))
+
+    def wait_for_input(self, job_id: str, question: dict) -> None:
+        """The agent paused to ask a person: the job waits, with the question, until `answer` is called. No worker is held meanwhile."""
+        self._execute("UPDATE jobs SET status = 'needs_input', question = ?, answer = NULL WHERE id = ?", (json.dumps(question), job_id))
+
+    def answer(self, job_id: str, answer: dict) -> bool:
+        """Record a person's reply and queue the job to continue. False if the job is not waiting for one (or another reply won)."""
+        sql = "UPDATE jobs SET status = 'queued', answer = ? WHERE id = ? AND status = 'needs_input' RETURNING id"
+        return bool(self._execute(sql, (json.dumps(answer), job_id)))  # one statement: two people cannot both answer
 
     def add_status(self, job_id: str, text: str) -> None:
         self._execute("UPDATE jobs SET statuses = json_insert(statuses, '$[#]', ?) WHERE id = ?", (text, job_id))

@@ -20,6 +20,7 @@ describe("StatusChip", () => {
   it.each([
     [{ state: "queued" }, "Queued"],
     [{ state: "loading" }, "Analyzing"],
+    [{ state: "waiting" }, "Needs your answer"],
     [{ state: "error" }, "Failed"],
     [{ state: "done" }, "Check report"],
     [{ state: "done", result: result({ outcome: "Conforming" }) }, "Conforming"],
@@ -32,6 +33,12 @@ describe("StatusChip", () => {
 });
 
 describe("RunRow", () => {
+  it("says a waiting run has a question, instead of showing progress", () => {
+    const html = row({ state: "waiting", finishedAt: 0 });
+    expect(html).toContain("The agent has a question for you");
+    expect(html).not.toContain("progress-shimmer");
+  });
+
   it("links a finished run to its report and sums up the verdicts", () => {
     const html = row({ result: result() });
     expect(html).toContain('href="/runs/abc"');

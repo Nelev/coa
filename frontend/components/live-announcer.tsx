@@ -3,10 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 
 import { type Run, useReport } from "@/components/report-context";
+import { isWaiting } from "@/lib/runs";
 
 const TITLE = "COA Agent";
 
 function sentence(run: Run): string {
+  if (isWaiting(run)) return `${run.filename} needs your answer`;
   return run.state === "error" ? `${run.filename} failed: ${run.message}` : `${run.filename} finished: ${run.result?.outcome ?? "done"}`;
 }
 
@@ -19,7 +21,8 @@ export function LiveAnnouncer() {
   useEffect(() => {
     const ended = runs.filter((run) => {
       const before = previous.current.get(run.id);
-      return (before === "queued" || before === "loading") && (run.state === "done" || run.state === "error");
+      const running = before === "queued" || before === "loading";
+      return running && (run.state === "done" || run.state === "error" || isWaiting(run));
     });
     previous.current = new Map(runs.map((run) => [run.id, run.state]));
     if (ended.length > 0) setMessage(ended.map(sentence).join(". "));
