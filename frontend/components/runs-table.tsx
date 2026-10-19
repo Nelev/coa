@@ -1,5 +1,4 @@
 import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
-import type { RefObject } from "react";
 
 import type { Run } from "@/components/report-context";
 import { RunRow } from "@/components/run-row";
@@ -61,8 +60,6 @@ export function RunsTable({
   now,
   sort,
   onSort,
-  compact,
-  body,
   onRetry,
   onDismiss,
 }: {
@@ -70,8 +67,6 @@ export function RunsTable({
   now: number;
   sort: Sort;
   onSort: (sort: Sort) => void;
-  compact: boolean;
-  body: RefObject<HTMLTableSectionElement | null>;
   onRetry: (id: string) => void;
   onDismiss: (id: string) => void;
 }) {
@@ -96,9 +91,9 @@ export function RunsTable({
             <SortHeader column="when" label="Updated" sort={sort} onSort={onSort} right className="hidden w-36 md:table-cell" />
           </tr>
         </thead>
-        <tbody ref={body}>
+        <tbody>
           {runs.map((run) => (
-            <RunRow key={run.id} run={run} now={now} compact={compact} wide={wide} onRetry={onRetry} onDismiss={onDismiss} />
+            <RunRow key={run.id} run={run} now={now} wide={wide} onRetry={onRetry} onDismiss={onDismiss} />
           ))}
         </tbody>
       </table>

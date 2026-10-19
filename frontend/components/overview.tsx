@@ -1,9 +1,8 @@
 "use client";
 
-import { Keyboard, Rows3, Search } from "lucide-react";
-import dynamic from "next/dynamic";
+import { Search } from "lucide-react";
 import { useSearchParams } from "next/navigation";
-import { useDeferredValue, useEffect, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useState } from "react";
 
 import { FILTER_LABELS, FilterBar } from "@/components/filter-bar";
 import { useReport } from "@/components/report-context";
@@ -14,36 +13,6 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { UploadButton } from "@/components/upload-button";
 import { type Filter, parseFilter, parseSort, SORT_LABELS, type Sort, tally, visibleRuns } from "@/lib/runs";
-import { useOnceOpened } from "@/lib/use-once-opened";
-import { usePersistedChoice } from "@/lib/use-persisted-choice";
-
-// the list of keys (a dialog) is loaded the first time it is asked for
-const ShortcutsDialog = dynamic(() => import("@/components/shortcuts-dialog").then((m) => m.ShortcutsDialog));
-
-const typing = (target: EventTarget | null) => target instanceof Element && target.closest("input, textarea, select, [contenteditable]");
-
-// j / k move between the rows and Enter opens the focused one (the file name is a link); / goes to the search and ? lists the keys
-function useListKeys(list: React.RefObject<HTMLElement | null>, search: React.RefObject<HTMLInputElement | null>, showHelp: (show: boolean) => void) {
-  useEffect(() => {
-    function onKey(event: KeyboardEvent) {
-      if (event.metaKey || event.ctrlKey || event.altKey || typing(event.target)) return;
-      if (event.key === "/" || event.key === "?") {
-        event.preventDefault();
-        if (event.key === "/") search.current?.focus();
-        else showHelp(true);
-        return;
-      }
-      if (event.key !== "j" && event.key !== "k") return;
-      const rows = Array.from(list.current?.querySelectorAll<HTMLElement>("[data-row]") ?? []);
-      const at = rows.indexOf(document.activeElement as HTMLElement);
-      const next = rows[event.key === "j" ? Math.min(at + 1, rows.length - 1) : Math.max(at - 1, 0)];
-      next?.focus();
-      event.preventDefault();
-    }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [list, search, showHelp]);
-}
 
 // the address says which filter and sort are on (so a link can point at "in progress"); it changes without a round trip to the server
 function setParam(key: string, value: string, fallback: string) {
@@ -53,9 +22,6 @@ function setParam(key: string, value: string, fallback: string) {
   const query = next.toString();
   window.history.replaceState(null, "", query ? `?${query}` : window.location.pathname);
 }
-
-// rows can be made tighter for a mouse; only a preference, so it is kept in the browser
-const DENSITIES = ["comfortable", "compact"] as const;
 
 const SAMPLES = [
   { file: "sample_coa_citric_acid.pdf", label: "Try a sample certificate" },
@@ -132,14 +98,7 @@ export function Overview() {
   const filter = parseFilter(params.get("filter"));
   const sort = parseSort(params.get("sort"));
   const [query, setQuery] = useState("");
-  const [density, setDensity] = usePersistedChoice("runs-density", DENSITIES);
-  const compact = density === "compact";
-  const [help, setHelp] = useState(false);
-  const helpUsed = useOnceOpened(help);
   const [now, setNow] = useState(() => Date.now());
-  const list = useRef<HTMLTableSectionElement>(null);
-  const search = useRef<HTMLInputElement>(null);
-  useListKeys(list, search, setHelp);
 
   // keeps "2 min ago" current without re-rendering every second
   useEffect(() => {
@@ -168,21 +127,13 @@ export function Overview() {
             <div className="relative min-w-48 flex-1 sm:max-w-sm">
               <Search aria-hidden className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-subtle-foreground" />
               <Input
-                ref={search}
                 type="search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Search file, product, lot or supplier"
                 aria-label="Search runs"
-                aria-keyshortcuts="/"
-                className="h-9 pr-8 pl-8 pointer-coarse:h-10"
+                className="h-9 pl-8 pointer-coarse:h-10"
               />
-              <kbd
-                aria-hidden
-                className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded border bg-muted px-1.5 font-mono text-[0.7rem] text-subtle-foreground pointer-coarse:hidden"
-              >
-                /
-              </kbd>
             </div>
             {/* the column headers sort on a wide screen; the phone layout has no headers */}
             <label className="flex items-center gap-2 text-sm text-muted-foreground md:hidden">
@@ -204,26 +155,6 @@ export function Overview() {
                 {shown.length === runs.length ? `${runs.length} ${runs.length === 1 ? "run" : "runs"}` : `${shown.length} of ${runs.length} runs`}
                 {filter !== "all" && <span className="sr-only"> ({FILTER_LABELS[filter]})</span>}
               </p>
-              <Button
-                variant="outline"
-                size="sm"
-                aria-pressed={compact}
-                onClick={() => setDensity(compact ? "comfortable" : "compact")}
-                className="pointer-coarse:hidden"
-              >
-                <Rows3 />
-                Compact
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Keyboard shortcuts"
-                aria-keyshortcuts="?"
-                onClick={() => setHelp(true)}
-                className="pointer-coarse:hidden"
-              >
-                <Keyboard />
-              </Button>
             </div>
           </div>
 
@@ -242,18 +173,8 @@ export function Overview() {
               </Button>
             </div>
           ) : (
-            <RunsTable
-              runs={shown}
-              now={now}
-              sort={sort}
-              onSort={changeSort}
-              compact={compact}
-              body={list}
-              onRetry={retryUpload}
-              onDismiss={dismissRun}
-            />
+            <RunsTable runs={shown} now={now} sort={sort} onSort={changeSort} onRetry={retryUpload} onDismiss={dismissRun} />
           )}
-          {helpUsed ? <ShortcutsDialog open={help} onOpenChange={setHelp} /> : null}
         </>
       )}
     </div>
