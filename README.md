@@ -18,8 +18,8 @@ and checks the reported results against the **plant's own specification** for th
 | The agent is a ReAct loop of two nodes, `agent` (the model, with the tools bound) and `tools` (runs what it called); every step of the check is a tool, and the model picks the next one | done |
 | Tracing of every run in [LangSmith](https://smith.langchain.com/) | done, opt-in through environment variables only (no code): see [Tracing](#tracing-langsmith) |
 | Mail when a lot is non-conforming | done (SMTP, sent by the `notify_quality_team` tool, which refuses any other outcome; a failure is logged as a warning and never fails the job) |
-| API: `POST /jobs` queues the agent on an uploaded PDF; `GET /jobs` and `GET /jobs/{id}` return the progress, the UI spec and the tokens and cost (`input_tokens`, `output_tokens`, `cost_usd`) of the run's model calls; `GET /jobs/{id}/pdf` returns the certificate; `POST /jobs/{id}/answer` answers what a paused agent asks (the job is `needs_input` and carries its `question`); `POST /jobs/{id}/decision` records a person's decision | done (jobs are kept in SQLite and survive restarts; CORS allows `http://localhost:3000` unless `CORS_ORIGINS` (comma-separated) says otherwise; every `/jobs` endpoint requires a WorkOS access token, but any signed-in person can see and decide every job) |
-| Frontend (Next.js + shadcn dashboard) | WorkOS AuthKit sign-in; light, dark or system theme (user menu). `/login` is the front door: a card that continues to WorkOS sign-in, over an animated pharmaceutical line (vials scanned and tagged PASS, REVIEW or FAIL, and drifting molecules; still for reduced motion), and signed-out visitors are sent there with the page they asked for. `/` is an overview: counts that double as filters (all, needs attention, in progress, conforming, awaiting decision), search, and a table you can sort by its headers, with live progress per run, how long each took, and its cost and tokens; the filter and sort are in the address, and `j`/`k`, `/` and `?` work from the keyboard. `/runs/[id]` opens with the lot, the verdict and a bar of the test results, then the report (with an Activity tab of the steps, and links to each finding), a link to open the CoA, and the decision: approve, put on hold or reject, as one of two demo reviewers, with a reason, in a column beside the report (a bottom sheet on a phone); rejecting, holding or overriding the agent asks for confirmation first, and toasts say what was recorded. Upload with the button or by dropping PDFs anywhere; runs come back after a reload |
+| API: `POST /jobs` queues the agent on an uploaded PDF; `GET /jobs` and `GET /jobs/{id}` return the progress, the UI spec and the tokens and cost (`input_tokens`, `output_tokens`, `cost_usd`) of the run's model calls; `GET /jobs/{id}/pdf` returns the certificate; `POST /jobs/{id}/answer` answers what a paused agent asks (the job is `needs_input` and carries its `question`); `POST /jobs/{id}/decision` records a person's decision | done (jobs are kept in SQLite and survive restarts; CORS allows `http://localhost:3000` unless `CORS_ORIGINS` (comma-separated) says otherwise; every `/jobs` endpoint requires a WorkOS access token, but any signed-in person can see and decide every job, and `by` is the name the frontend sends) |
+| Frontend (Next.js + shadcn dashboard) | WorkOS AuthKit sign-in; light, dark or system theme (user menu). `/login` is the front door: a card that continues to WorkOS sign-in, over an animated pharmaceutical line (vials scanned and tagged PASS, REVIEW or FAIL, and drifting molecules; still for reduced motion), and signed-out visitors are sent there with the page they asked for. `/` is an overview: counts that double as filters (all, needs attention, in progress, conforming, awaiting decision), search, and a table you can sort by its headers, with live progress per run, how long each took, and its cost and tokens; the filter and sort are in the address, and `j`/`k`, `/` and `?` work from the keyboard. `/runs/[id]` opens with the lot, the verdict and a bar of the test results, then the report (with an Activity tab of the steps, and links to each finding), a link to open the CoA, and the decision: approve, put on hold or reject, as the signed-in person, with a reason, in a column beside the report (a bottom sheet on a phone); rejecting, holding or overriding the agent asks for confirmation first, and toasts say what was recorded. Upload with the button or by dropping PDFs anywhere; runs come back after a reload |
 
 The plant limits in `backend/docs/erp_demo.json` are **placeholder values**, not real plant data.
 
@@ -204,7 +204,9 @@ frontend/           Next.js + shadcn dashboard, light / dark / system theme (tok
   components/run-row.tsx           one row: status, product and lot, verdict counts or progress, time
   components/run-page.tsx          the report page: header, previous / next run, Report and Activity tabs
   components/answer-panel.tsx      the checks a paused agent flagged as unsure (a run that needs your review), and the form that answers them
-  components/decision-panel.tsx    approve / hold / reject a finished run, as one of the demo reviewers, with a reason
+  components/account-context.tsx   who is signed in (name, email), for the forms
+  components/acting-as.tsx         "Deciding as ..." / "Answering as ...": the signed-in person, shown and not chosen
+  components/decision-panel.tsx    approve / hold / reject a finished run, as the signed-in person, with a reason
   components/page-dropzone.tsx     drop PDFs anywhere; components/live-announcer.tsx tells screen readers when a run ends
   lib/runs.ts                      filter, search, priority sort and tallies of the runs
   lib/access-token.ts              the session's access token for the API, cached until shortly before it expires
@@ -381,7 +383,7 @@ The agent only prepares the report; a person decides. `POST /jobs/{id}/decision`
 
 - A `reason` is required to reject or hold, and to approve a lot the agent did not find conforming (an override).
 - `approved` and `rejected` are final (`409` afterwards); a lot `on_hold` can be decided again, and the new decision replaces the hold.
-- Only a finished job can be decided (`409` before). The caller must be signed in, but `by` is whatever the caller says (the frontend offers two demo reviewers) and is not tied to the signed-in person: there is no e-signature and no audit trail, and a later decision replaces an earlier hold.
+- Only a finished job can be decided (`409` before). The caller must be signed in, and the frontend sends the signed-in person's name as `by`, but the API does not check it: `by` is whatever the caller says, not tied to the signed-in id, so there is no e-signature and no audit trail, and a later decision replaces an earlier hold.
 
 Frontend:
 
@@ -433,7 +435,7 @@ its own folder changes. The same steps run locally:
 - The ERP's `approved_suppliers` and `min_remaining_shelf_life_days` are never read, so an unapproved supplier or a lot with
   too little shelf life left still comes out as conforming. Only the test table is compared.
 - Everything signed in sees everything: each job records its `owner`, but the API does not filter or check it, so any
-  signed-in person can list every job, open its PDF and decide it. `by` on a decision is free text, not the signed-in person.
+  signed-in person can list every job, open its PDF and decide it. `by` on a decision and an answer is free text: the frontend fills it with the signed-in person's name, but the API does not check it.
 - An upload is not checked: no size limit, and no check that it is a PDF before a worker picks it up (a non-PDF becomes a failed job).
 - The queue is in memory and per process, and the API must run as one uvicorn worker. Jobs and uploads live in
   `backend/data/` with no cleanup.

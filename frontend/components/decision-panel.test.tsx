@@ -4,6 +4,7 @@ import { DecisionPanel } from "@/components/decision-panel";
 import type { Run } from "@/components/report-context";
 
 vi.mock("@/components/report-context", () => ({ useReport: () => ({ decide: vi.fn() }) }));
+vi.mock("@/components/account-context", () => ({ useAccount: () => ({ name: "Anna Rossi", email: "anna@example.com" }) }));
 vi.mock("@/components/toaster", () => ({ useToast: () => ({ toast: vi.fn(), dismiss: vi.fn() }) }));
 
 const result = { outcome: "Conforming" as const, counts: { pass: 3, fail: 0, review: 0 }, product: null, lot: null, supplier: null };
@@ -18,6 +19,13 @@ describe("DecisionPanel", () => {
     expect(html).toContain("Reject");
     expect(html).not.toContain('disabled=""');
     expect(html).toContain("A reason is required to reject or hold a lot.");
+  });
+
+  it("says who the decision is recorded as: the signed-in person, with nothing to choose", () => {
+    const html = panel({});
+    expect(html).toContain("Deciding as");
+    expect(html).toContain("Anna Rossi");
+    expect(html).not.toContain("<select");
   });
 
   it("calls approving a lot that does not conform an override and asks for a reason", () => {
