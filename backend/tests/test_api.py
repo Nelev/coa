@@ -16,7 +16,7 @@ from jobs import SUMMARY, Jobs, open_checkpointer
 from react_agent.react_agent import graph
 from schema import schema
 from schema.schema import CoAData, CoAHeader, DocumentCheck
-from tests.conftest import CALL_USAGE, call
+from tests.conftest import CALL_USAGE, call, connect
 
 RESULT = {
     "outcome": "Conforming",
@@ -361,23 +361,20 @@ def test_the_frontend_origin_is_allowed_by_cors(path, method):
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
 
 
-def connect():
-    """A connection to the test's database."""
-    return psycopg.connect(os.environ["DATABASE_URL"])
-
-
 def tables_in(schema):
     with connect() as db:
         rows = db.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = %s", (schema,)).fetchall()
     return {name for (name,) in rows}
 
 
-def test_the_database_has_two_tables_and_the_checkpoints_have_their_own_schema(start_app, database):
+def test_the_database_has_two_tables_and_the_checkpoints_and_the_memory_have_their_own_schema(start_app, database):
     start_app()
 
     assert tables_in(database) == {"users", "runs", "alembic_version"}
-    assert {"checkpoints", "checkpoint_writes"} <= tables_in(os.environ["CHECKPOINT_SCHEMA"])
-    with connect() as db:  # pgvector is installed, for the semantic search to come
+    assert {"checkpoints", "checkpoint_writes", "langchain_pg_collection", "langchain_pg_embedding"} <= tables_in(
+        os.environ["CHECKPOINT_SCHEMA"]
+    )
+    with connect() as db:  # pgvector is installed, for the embeddings of the answers
         assert db.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'").fetchone()
 
 
@@ -536,10 +533,16 @@ UNTIL_THE_PAUSE = [
     call("load_plant_spec"),
     call("compare_specs"),
     [schema.TestCheck(test="Appearance", verdict="review", reason="Unit differs.", unsure=True, unsure_reason=REASON)],
+    call("check_memory"),
     call("resolve_questions"),
 ]
+NOTES = schema.ClarificationNotes(
+    notes=[schema.ClarificationNote(test="Appearance", summary="ppb is a typo for ppm.", topic="unit_mismatch")]
+)
 AFTER_THE_ANSWER = [
     [schema.TestCheck(test="Appearance", verdict="pass", reason="Typo.")],
+    call("remember_clarifications"),
+    NOTES,
     call("write_summary"),
     call("render_ui"),
     '{"root": "a", "elements": {"a": {"type": "Text", "props": {"text": "hi"}, "children": []}}}',
@@ -562,7 +565,7 @@ def test_a_run_that_asks_a_person_waits_with_its_question(asking):
     _, job, _ = asking
     assert job["question"]["questions"][0]["reason"] == REASON and job["question"]["id"]
     assert job["finished_at"] is None and job["ui_spec"] is None and job["answer"] is None
-    assert job["statuses"][-1] == "Comparing results with the specification"
+    assert job["statuses"][-1] == "Looking for earlier answers"
 
 
 def test_a_waiting_job_does_not_hold_a_worker(asking):
@@ -579,8 +582,61 @@ def test_the_answer_continues_the_run(asking):
     done = wait_for_end(client, job["id"])
     assert done["status"] == "done" and done["result"]["outcome"] == "Conforming"
     assert done["question"] is None and done["answer"]["by"] == "QA Anna"
-    assert done["statuses"][-3:] == ["Applying the answers", "Summarizing the findings", "Building the report"]
+    assert done["statuses"][-4:] == ["Applying the answers", "Remembering the answers", "Summarizing the findings", "Building the report"]
     assert llm.responses == []  # every answer was used once: nothing before the question was asked again
+
+
+def kept_answers():
+    """What the memory holds, read from the vector store's table: (id, scope, product, the answer's summary, whether it has a vector)."""
+    with connect() as db:
+        return db.execute(
+            "SELECT id, cmetadata->>'scope', cmetadata->>'product_code', cmetadata->>'summary', embedding IS NOT NULL "
+            f"FROM {os.environ['CHECKPOINT_SCHEMA']}.langchain_pg_embedding ORDER BY id"
+        ).fetchall()
+
+
+def test_an_answer_is_kept_in_the_memory_with_who_it_is_for(asking):
+    client, job, _ = asking
+    assert client.post(f"/jobs/{job['id']}/answer", json={**ANSWER, "remember": {"Appearance": "global"}}).status_code == 200
+    wait_for_end(client, job["id"])
+    assert kept_answers() == [(f"{job['id']}:Appearance", "global", "CA-ANH-25", "ppb is a typo for ppm.", True)]  # with its vector
+
+
+def test_an_answer_defaults_to_the_products_lots(asking):
+    client, job, _ = asking
+    client.post(f"/jobs/{job['id']}/answer", json=ANSWER)
+    wait_for_end(client, job["id"])
+    assert [(scope, product) for _, scope, product, *_ in kept_answers()] == [("product", "CA-ANH-25")]
+
+
+def test_an_answer_for_this_lot_only_is_not_kept(asking):
+    client, job, _ = asking
+    client.post(f"/jobs/{job['id']}/answer", json={**ANSWER, "remember": {"Appearance": "none"}})
+    wait_for_end(client, job["id"])
+    assert kept_answers() == []
+
+
+def test_a_later_run_is_asked_with_the_answer_an_earlier_one_got(asking):
+    client, first, llm = asking
+    client.post(f"/jobs/{first['id']}/answer", json=ANSWER)
+    wait_for_end(client, first["id"])
+    llm.responses.extend(UNTIL_THE_PAUSE)  # the same check, on another certificate
+    second = wait_for_status(client, submit(client, CITRIC_ACID_PDF)["id"], "needs_input")
+    (precedent,) = second["question"]["questions"][0]["precedents"]
+    assert (precedent["answer"], precedent["by"], precedent["run_id"], precedent["match"]) == (
+        ANSWER["answers"]["Appearance"],
+        "QA Anna",
+        first["id"],
+        "same_product",
+    )
+    assert first["question"]["questions"][0]["precedents"] == []  # the first run had nothing to find
+
+
+def test_a_test_not_asked_is_refused_in_the_scopes_too(asking):
+    client, job, _ = asking
+    url = f"/jobs/{job['id']}/answer"
+    assert client.post(url, json={**ANSWER, "remember": {"Lead": "global"}}).status_code == 422
+    assert client.post(url, json={**ANSWER, "remember": {"Appearance": "everyone"}}).status_code == 422
 
 
 def test_an_answer_is_taken_once(asking):

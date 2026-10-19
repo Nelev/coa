@@ -6,6 +6,7 @@ psycopg[binary]
 alembic
 langchain
 langchain-openai
+langchain-postgres
 pypdf
 python-dotenv
 python-multipart

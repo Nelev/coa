@@ -42,7 +42,7 @@ answer and picks the next call, following the order in its system prompt:
 ```
 START → agent ⇄ tools → END        (the agent ends the run when it makes no tool call)
 
-load_document → validate_document ─┬→ get_document_data → load_plant_spec ─┬→ compare_specs → resolve_questions* → write_summary → render_ui → notify_quality_team*
+load_document → validate_document ─┬→ get_document_data → load_plant_spec ─┬→ compare_specs → check_memory* → resolve_questions* → remember_clarifications* → write_summary → render_ui → notify_quality_team*
                                    │                                       └──────────────→ write_summary → render_ui → notify_quality_team*   (no plant spec)
                                    └─────────────────────────────────────────────────────→ render_ui                                          (not a CoA)
                                                                                          * only a non-conforming lot is mailed
@@ -62,10 +62,22 @@ The steps (the fixed graph's nodes, the ReAct agent's tools):
 | `get_document_data` | yes | Extracts the CoA into a structured schema: header (certificate, product, lot, dates, PO, quantities), one row per test (specification, method, result, unit, supplier status) and the conclusion. The prompt asks for verbatim values and `null` for anything not stated. |
 | `load_plant_spec` | no | Looks up the CoA's `product_code` in the ERP's material master (`docs/erp_demo.json`). If there is no entry, it records a `missing_plant_spec` issue and the model skips `compare_specs`. It runs the `get_material` tool itself. |
 | `compare_specs` | yes | Sends the plant requirements and the CoA results (`test`, `result`, `unit` only, so the supplier's own limits and pass/fail can't bias the judgement) to the model with a dedicated prompt. It returns one verdict per plant test: `pass`, `fail` or `review`. |
-| `resolve_questions` | yes | ReAct agent only. When the model flags a check as `unsure` (with its reason) in `compare_specs`, whatever its verdict, this tool pauses the run with `interrupt()` for a person to review it and, once answered, judges those tests again with the answer, which it records in `clarifications`. It is its own tool because a resumed run starts the interrupted tool over: the model calls of `compare_specs` must not run twice. `write_summary` refuses to run while a flagged check is unreviewed. The job waits as `needs_input` (the worker is freed) until `POST /jobs/{id}/answer`; the answer survives a restart. |
+| `check_memory` | no | ReAct agent only. When `compare_specs` flagged checks, looks in the memory (below) for what a person answered when a check like each one came up, and attaches what it finds (`precedents`) to the question. A person still decides: the answers found are shown, never applied. A memory that cannot be read finds nothing and never stops the run. |
+| `resolve_questions` | yes | ReAct agent only. When the model flags a check as `unsure` (with its reason) in `compare_specs`, whatever its verdict, this tool pauses the run with `interrupt()` for a person to review it and, once answered, judges those tests again with the answer, which it records in `clarifications`. It is its own tool because a resumed run starts the interrupted tool over: the model calls of `compare_specs` must not run twice. `write_summary` refuses to run while a flagged check is unreviewed, and this tool while the memory is unchecked. The job waits as `needs_input` (the worker is freed) until `POST /jobs/{id}/answer`; the answer survives a restart. |
+| `remember_clarifications` | yes | ReAct agent only. Keeps what a person answered in the memory: one model call writes a one-sentence summary and a topic for each answer, which are embedded with it. The person chose who an answer is kept for (the product's future lots, every product, or this lot only, which keeps nothing). It takes no arguments, never stops the run when it fails, and `write_summary` waits for it. |
 | `write_summary` | no | Works out the outcome (Conforming, Needs review or Non-conforming) from the issues and the verdicts, and stores the few facts the job list shows in `result`. |
 | `render_ui` | yes | Last step. Sends the header, the per-test verdicts and the issues to the model with a prompt that lists the available components (Stack, Grid, Card, Separator, Collapsible, Accordion, Heading, Text, Badge, Alert, Progress, Table) and how to lay out the page. The reply is a [json-render](https://github.com/vercel-labs/json-render) spec stored in `ui_spec`. Invalid JSON is retried once, then replaced by an error Alert. For a document that is not a CoA it skips the model and returns a fixed error Alert. |
 | `notify_quality_team` | no | ReAct agent only. Mails the plant's quality team about a non-conforming lot (product, lot, supplier, test counts, a link to the job). It takes no arguments and does nothing for any other outcome: the model, told to mail only non-conforming lots, mailed a conforming one in every live run. |
+
+#### The memory (`backend/memory.py`)
+
+What people answer is kept in a LangChain vector store, [`PGVector`](https://docs.langchain.com/oss/python/integrations/vectorstores/pgvector)
+from `langchain-postgres`: pgvector holds the embeddings, and an `OpenAIEmbeddings` (through OpenRouter) makes them. Its tables
+(`langchain_pg_collection`, `langchain_pg_embedding`) sit in the schema of the checkpoints (`CHECKPOINT_SCHEMA`) and are made when the API starts.
+An answer is a `Document` with the id `<run>:<test>` (keeping it again replaces it). Its text, which is embedded, is the test, why the agent was
+unsure, the answer and its summary; its metadata holds the rest, among it the `scope` (`product` or `global`), the `product_code` and the `test`.
+`check_memory` runs one `similarity_search_with_relevance_scores` per flagged check, filtered to the answers for the same test of the same product or
+for every product, and offers the closest ones scoring at least `MEMORY_MIN_SCORE`.
 
 Rules in the comparison prompt: judge against the plant requirements only; limits are inclusive; a `< x`
 result passes a `max` limit only if x ≤ max and can't be confirmed against a `min` limit; a unit mismatch is
@@ -234,8 +246,8 @@ uv venv .venv   # first time only
 uv pip install --python .venv/bin/python -r requirements-dev.txt
 ```
 
-The jobs and the agent's checkpoints are kept in Postgres with the [pgvector](https://github.com/pgvector/pgvector) extension (for the
-semantic search to come). For development, `docker compose up -d db` (from the repository root) starts one on `localhost:5432`; any
+The jobs, the agent's checkpoints and its memory (the answers people gave, with their embeddings) are kept in Postgres with the
+[pgvector](https://github.com/pgvector/pgvector) extension. For development, `docker compose up -d db` (from the repository root) starts one on `localhost:5432`; any
 Postgres with pgvector does, and the role needs the right to create the `vector` extension and a schema. Point the API at it in `backend/.env`:
 
 ```
@@ -346,6 +358,8 @@ Every setting, for reference (the backend reads the environment and `backend/.en
 | `WORKOS_CLIENT_ID` | backend, frontend | required: the same value in both; without it the API answers 503 |
 | `MAX_CONCURRENT_RUNS` | backend | worker threads, default 2 |
 | `DATABASE_URL` | backend | required: the Postgres (with pgvector) that holds the `users` and `runs` tables and the agent's checkpoints |
+| `EMBEDDING_MODEL` | backend | the model, through OpenRouter, that embeds the answers people give the agent (kept in the vector store, see Memory); it must return 1536 dimensions, default `openai/text-embedding-3-small` |
+| `MEMORY_MIN_SCORE` | backend | how similar (0 to 1) an earlier answer must be to be offered to a person, default 0.8 (calibrated for the default embedding model) |
 | `CHECKPOINT_SCHEMA` | backend | the schema of the agent's checkpoint tables, default `langgraph` |
 | `TEST_DATABASE_URL` | tests | the Postgres the tests create their schemas in, default `postgresql://postgres:postgres@localhost:5432/coa` |
 | `JOBS_DIR` | backend | where the uploaded PDFs (`uploads/`) live, default `backend/data/` |

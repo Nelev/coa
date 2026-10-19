@@ -12,9 +12,11 @@ from fastapi.responses import FileResponse
 from langgraph.types import Command
 from pydantic import BaseModel
 
+import memory
 from auth import require_user
 from jobs import Jobs, open_checkpointer
 from react_agent.react_agent import graph
+from schema.schema import Scope
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +57,7 @@ def run_job(job_id: str) -> None:
         resume = bool(snapshot.values)  # a checkpoint exists: continue after it (nothing runs if the run had finished)
         store.start(job_id, keep_statuses=resume)
         if waiting:
-            inputs = Command(resume={"answers": answer["answers"], "by": answer["by"]})
+            inputs = Command(resume={"answers": answer["answers"], "by": answer["by"], "remember": answer.get("remember", {})})
         elif resume:
             inputs = None
         else:
@@ -92,6 +94,7 @@ async def lifespan(_app: FastAPI):
     store = Jobs(data_dir)
     pending = queue.Queue()
 
+    memory.vector_store()  # makes the memory's tables now, not in the middle of a run
     with open_checkpointer(store.dsn) as checkpointer:
         agent_app = graph.compile(checkpointer=checkpointer)
 
@@ -161,6 +164,7 @@ def get_pdf(job_id: str):
 class Answer(BaseModel):
     answers: dict[str, str]  # test name -> the answer; a test left out or blank keeps the agent's verdict
     by: str
+    remember: dict[str, Scope] = {}  # test name -> who the answer is kept for; a test left out gets the default, DEFAULT_SCOPE
 
 
 @router.post("/jobs/{job_id}/answer")
@@ -175,10 +179,10 @@ def answer_job(job_id: str, body: Answer):
     if job["status"] != "needs_input":
         raise HTTPException(status_code=409, detail="the agent is not waiting for an answer")
     question = job["question"]
-    unknown = set(body.answers) - {q["test"] for q in question["questions"]}
+    unknown = (set(body.answers) | set(body.remember)) - {q["test"] for q in question["questions"]}
     if unknown:
         raise HTTPException(status_code=422, detail=f"not a question asked: {', '.join(sorted(unknown))}")
-    if not store.answer(job_id, {"for": question["id"], "answers": body.answers, "by": by}):
+    if not store.answer(job_id, {"for": question["id"], "answers": body.answers, "by": by, "remember": body.remember}):
         raise HTTPException(status_code=409, detail="the agent is not waiting for an answer")
     pending.put(job_id)
     return store.get(job_id, with_spec=False)

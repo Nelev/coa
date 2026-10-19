@@ -1,8 +1,9 @@
 "use client";
 
-import { Check, ChevronDown, CircleCheck, CircleX, Link2, TriangleAlert } from "lucide-react";
+import { Check, CircleCheck, CircleX, Link2, TriangleAlert } from "lucide-react";
 import { createContext, type ReactNode, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 
+import { Summary } from "@/components/disclosure";
 import { TONE } from "@/components/tones";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -277,21 +278,6 @@ export function ReportProgress({ props }: { props: { value: number; max?: number
         <div className="h-full rounded-full bg-primary" style={{ width: `${(value / max) * 100}%` }} />
       </div>
     </div>
-  );
-}
-
-// a native <details>: it opens and closes with the keyboard and is announced as a disclosure, with no script
-function Summary({ className, children }: { className: string; children: ReactNode }) {
-  return (
-    <summary
-      className={cn(
-        "flex w-full cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden",
-        className,
-      )}
-    >
-      {children}
-      <ChevronDown aria-hidden className="size-4 shrink-0 transition-transform group-open/details:rotate-180" />
-    </summary>
   );
 }
 

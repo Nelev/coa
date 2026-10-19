@@ -10,6 +10,10 @@ so the tool takes no arguments, builds the mail from the state and refuses any o
 compare_specs keeps the checks the model flagged as unsure (with its reason); resolve_questions asks a person about them with
 interrupt() and judges those tests again with the answer. It is its own tool because a resumed run starts the interrupted tool over:
 the model calls of compare_specs must not run twice.
+check_memory looks in the memory (memory.py, a LangChain vector store) for what a person answered when a check like each flagged one came
+up, and gives it to the person who is asked; resolve_questions waits for it. remember_clarifications keeps what a person answered, with a
+summary and a topic of the model's and an embedding, in the same memory. Both take no arguments, like notify_quality_team, and the second
+is a tool of its own for the same reason as resolve_questions: its model call and its embeddings must not run again when the run resumes.
 """
 
 import json
@@ -28,11 +32,12 @@ from langgraph.prebuilt import InjectedState
 from langgraph.types import Command, interrupt
 from pypdf import PdfReader
 
+import memory
 import notify
 from agent.tools import get_material, send_email
-from schema.schema import CoAData, ComparisonResult, DocumentCheck, Issue, TestCheck
+from schema.schema import DEFAULT_SCOPE, ClarificationNotes, CoAData, ComparisonResult, DocumentCheck, Issue, TestCheck
 
-from .prompts import COMPARE_PROMPT, EXTRACTION_PROMPT, RENDER_UI_PROMPT, VALIDATE_PROMPT
+from .prompts import COMPARE_PROMPT, EXTRACTION_PROMPT, NOTES_PROMPT, RENDER_UI_PROMPT, VALIDATE_PROMPT
 
 load_dotenv()
 
@@ -45,6 +50,9 @@ VALIDATION_CHARS = 6000  # the start of a document is enough to tell what kind i
 
 # check verdict -> (issue kind, issue severity); a pass raises no issue
 VERDICT_ISSUE = {"fail": ("non_conforming", "critical"), "review": ("needs_review", "warning")}
+
+# what the report shows of an answer; the scope and the rest stay out of the model's input
+REPORTED = ("test", "reason", "answer", "by", "summary", "topic")
 
 NON_CONFORMING = "Non-conforming"
 NOT_A_COA = "Not a CoA"
@@ -104,6 +112,12 @@ def _need(state: dict, key: str, first: str) -> None:
         raise OutOfOrder(f"There is no {key} yet: call {first} first.")
 
 
+def _not_waiting(state: dict) -> None:
+    """Raise while checks flagged as unsure still wait for a person."""
+    if open_questions := state.get("open_questions"):
+        raise OutOfOrder(f"{len(open_questions)} check(s) flagged as unsure still wait for a person: call resolve_questions first.")
+
+
 def _reply(update: dict, tool_call_id: str, name: str, content: str) -> Command:
     """Apply a step's state update and answer the call with `content`."""
     return Command(update={**update, "messages": [ToolMessage(content, name=name, tool_call_id=tool_call_id)]})
@@ -153,7 +167,7 @@ def _summary(state: dict) -> dict:
         "header": state.get("supplier_materials", {}),
         "tests": [{k: c[k] for k in ("test", "verdict", "supplier_result", "plant_requirement")} for c in checks],
         "issues": issues,
-        "clarifications": state.get("clarifications", []),
+        "clarifications": [{k: c[k] for k in REPORTED if c.get(k) is not None} for c in state.get("clarifications", [])],
     }
 
 
@@ -271,7 +285,7 @@ def compare_specs(state: State, tool_call_id: CallId) -> Command:
     """Compare each CoA result with the plant requirements and record a verdict (pass, fail or review) for every required test.
 
     Needs the plant specification: call it only after load_plant_spec found one. A check the model flagged as unsure is not final:
-    when it reports flagged tests, call resolve_questions next.
+    when it reports flagged tests, call check_memory next, then resolve_questions.
     """
     _need(state, "plant_spec", "load_plant_spec")
     _status("Comparing results with the specification")
@@ -292,24 +306,50 @@ def compare_specs(state: State, tool_call_id: CallId) -> Command:
     ]
     content = f"Verdicts: {_json(_counts(test_checks))}. Issues raised: {len(issues)}."
     if questions:
-        content += f" Flagged unsure, for a person to review: {len(questions)}. Call resolve_questions."
+        content += f" Flagged unsure, for a person to review: {len(questions)}. Call check_memory, then resolve_questions."
     update = {**usage, "test_checks": test_checks, "issues": issues, "open_questions": questions}
     return _reply(update, tool_call_id, "compare_specs", content)
+
+
+@tool
+def check_memory(state: State, tool_call_id: CallId) -> Command:
+    """Look in the memory of earlier answers for what a person answered when a check like each flagged one came up.
+
+    Call it once, right after compare_specs, and only when compare_specs reported flagged tests. What it finds is shown to the person
+    that resolve_questions asks, who decides; a memory that cannot be read finds nothing and never stops the run.
+    """
+    _need(state, "open_questions", "compare_specs")
+    questions = state["open_questions"]
+    if not questions:
+        return _reply({}, tool_call_id, "check_memory", "No check is flagged as unsure: nothing to look up.")
+    _status("Looking for earlier answers")
+    product_code = state.get("supplier_materials", {}).get("product_code")
+    try:
+        asked = [{**q, "precedents": memory.find_precedents(q, product_code)} for q in questions]  # a question has them once looked up
+    except Exception as error:
+        logger.warning("the memory was not read: %s: %s", type(error).__name__, error)
+        asked = [{**q, "precedents": []} for q in questions]
+    content = (
+        f"Earlier answers found for {sum(bool(q['precedents']) for q in asked)} of {len(asked)} flagged check(s). Call resolve_questions."
+    )
+    return _reply({"open_questions": asked}, tool_call_id, "check_memory", content)
 
 
 @tool
 def resolve_questions(state: State, tool_call_id: CallId) -> Command:
     """Ask a person to review the checks compare_specs flagged as unsure (e.g. a result in another unit) and wait for their answers.
 
-    Call it once, right after compare_specs, and only when compare_specs reported flagged tests. The run pauses until a person
+    Call it once, right after check_memory, and only when compare_specs reported flagged tests. The run pauses until a person
     answers; the tests they answered are then judged again with the answer.
     """
     _need(state, "open_questions", "compare_specs")
     questions = state["open_questions"]
     if not questions:
         return _reply({}, tool_call_id, "resolve_questions", "No check is flagged as unsure.")
+    if any("precedents" not in q for q in questions):
+        raise OutOfOrder("The memory is not checked yet: call check_memory first.")
     # the first thing the tool does: a resumed run starts the tool over, and nothing before this line may cost a model call
-    reply = interrupt({"questions": questions})  # a person's reply: {"answers": {test: text}, "by": who}
+    reply = interrupt({"questions": questions})  # a person's reply: {"answers": {test: text}, "by": who, "remember": {test: scope}}
     answers, by = {test: text.strip() for test, text in reply["answers"].items() if text.strip()}, reply.get("by")
     _status("Applying the answers")
     answered = [q for q in questions if q["test"] in answers]  # a check left unanswered keeps the model's verdict
@@ -319,7 +359,17 @@ def resolve_questions(state: State, tool_call_id: CallId) -> Command:
     names = {q["test"] for q in answered}
     plant_tests = [t for t in state["plant_spec"]["tests"] if t["test"] in names]
     coa_tests = _coa_tests(state["tests"], names)
-    clarifications = [{"test": q["test"], "reason": q["reason"], "answer": answers[q["test"]], "by": by} for q in answered]
+    scopes = reply.get("remember") or {}  # test -> who the answer is kept for; a test left out gets the default
+    clarifications = [
+        {
+            "test": q["test"],
+            "reason": q["reason"],
+            "answer": answers[q["test"]],
+            "by": by,
+            "scope": scopes.get(q["test"], DEFAULT_SCOPE),  # the API takes only the known scopes
+        }
+        for q in answered
+    ]
     extra = "\n\nA person responsible for quality reviewed the points you were unsure about. Their answers are authoritative:\n" + _json(
         [{k: c[k] for k in ("test", "reason", "answer")} for c in clarifications]
     )
@@ -339,16 +389,58 @@ def resolve_questions(state: State, tool_call_id: CallId) -> Command:
     return _reply(update, tool_call_id, "resolve_questions", content)
 
 
+def _note_input(clarification: dict, check: dict) -> dict:
+    """What the model sees of an answer: the check it is about, and the answer."""
+    figures = {k: check.get(k) for k in ("supplier_result", "plant_requirement")}
+    return {**{k: clarification[k] for k in ("test", "reason", "answer")}, **figures}
+
+
+@tool
+def remember_clarifications(state: State, tool_call_id: CallId) -> Command:
+    """Keep what a person answered about the flagged checks, with a summary and a topic, so that a later review of the same kind can use it.
+
+    Call it once, after resolve_questions, and only when a person answered. An answer given for this lot only is not kept. A failure
+    to remember never stops the run.
+    """
+    _not_waiting(state)
+    if state.get("memory_saved"):
+        return _reply({}, tool_call_id, "remember_clarifications", "Already kept.")
+    kept = [c for c in state.get("clarifications", []) if c["scope"] != "none"]
+    if not kept:
+        return _reply(
+            {"memory_saved": True}, tool_call_id, "remember_clarifications", "Nothing to keep: no answer was given for later reviews."
+        )
+    _status("Remembering the answers")
+    checks = {c["test"]: c for c in state.get("test_checks", [])}
+    usage, notes = NO_USAGE, {}
+    try:  # one call for all the answers; without it the answers are kept without a summary and a topic
+        result, usage = _ask_structured(ClarificationNotes, NOTES_PROMPT + _json([_note_input(c, checks.get(c["test"], {})) for c in kept]))
+        notes = {n.test: n for n in result.notes}
+    except Exception as error:
+        logger.warning("the answers were not summarized: %s: %s", type(error).__name__, error)
+    try:
+        memory.keep(kept, state.get("supplier_materials", {}), state["job_id"], notes)
+        content = f"Kept {len(kept)} answer(s)."
+    except Exception as error:  # the memory never fails the job
+        logger.warning("the answers were not saved: %s: %s", type(error).__name__, error)
+        content = f"not kept: {type(error).__name__}: {error}"
+    clarifications = [  # what the report shows of an answer that was kept
+        {**c, "summary": note.summary, "topic": note.topic} if (note := notes.get(c["test"])) else c for c in state["clarifications"]
+    ]
+    return _reply({**usage, "clarifications": clarifications, "memory_saved": True}, tool_call_id, "remember_clarifications", content)
+
+
 @tool
 def write_summary(state: State, tool_call_id: CallId) -> Command:
     """Work out the outcome (Conforming, Needs review or Non-conforming) from the findings so far.
 
     Call it when the checks are done, or when a missing specification means there is nothing to compare. render_ui builds the
     report from the findings. It waits for the checks flagged as unsure to be reviewed: call resolve_questions first when
-    compare_specs reported any.
+    compare_specs reported any, and remember_clarifications when a person answered.
     """
-    if open_questions := state.get("open_questions"):
-        raise OutOfOrder(f"{len(open_questions)} check(s) flagged as unsure still wait for a person: call resolve_questions first.")
+    _not_waiting(state)
+    if state.get("clarifications") and not state.get("memory_saved"):
+        raise OutOfOrder("A person's answers are not kept yet: call remember_clarifications first.")
     _status("Summarizing the findings")
     summary = _summary(state)
     result = _result(summary["outcome"], state.get("test_checks", []), summary["header"])
@@ -414,7 +506,9 @@ tools = [
     get_document_data,
     load_plant_spec,
     compare_specs,
+    check_memory,
     resolve_questions,
+    remember_clarifications,
     write_summary,
     render_ui,
     notify_quality_team,
