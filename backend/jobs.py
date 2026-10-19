@@ -3,7 +3,7 @@ import os
 import shutil
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO
@@ -29,7 +29,7 @@ def in_schema(dsn: str, schema: str) -> str:
 
 
 @contextmanager
-def open_checkpointer(dsn: str) -> Iterator[PostgresSaver]:
+def open_checkpointer(dsn: str) -> Generator[PostgresSaver, None, None]:
     """The agent's checkpointer, in its own schema (CHECKPOINT_SCHEMA, default `langgraph`), created with its tables when missing.
 
     PostgresSaver has no schema option: it creates its tables where the connection's search_path points.
