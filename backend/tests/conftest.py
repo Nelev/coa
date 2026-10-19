@@ -14,10 +14,10 @@ from pydantic import BaseModel
 
 import auth
 import main
-import memory
 import notify
 from agent import agent
 from jobs import in_schema
+from react_agent import memory
 from react_agent import tools as react_tools
 from schema import schema
 

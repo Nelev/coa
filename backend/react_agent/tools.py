@@ -32,11 +32,11 @@ from langgraph.prebuilt import InjectedState
 from langgraph.types import Command, interrupt
 from pypdf import PdfReader
 
-import memory
 import notify
 from agent.tools import get_material, send_email
 from schema.schema import DEFAULT_SCOPE, ClarificationNotes, CoAData, ComparisonResult, DocumentCheck, Issue, TestCheck
 
+from . import memory
 from .prompts import COMPARE_PROMPT, EXTRACTION_PROMPT, NOTES_PROMPT, RENDER_UI_PROMPT, VALIDATE_PROMPT
 
 load_dotenv()
@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 State = Annotated[dict, InjectedState]  # not AgentState: the tool's input is validated, and a state still being filled lacks keys
 CallId = Annotated[str, InjectedToolCallId]
 
+MAX_PAGES = 30  # a CoA has a few pages; the whole text goes to the model, so a longer document is refused before any call is paid for
 VALIDATION_CHARS = 6000  # the start of a document is enough to tell what kind it is
 
 # check verdict -> (issue kind, issue severity); a pass raises no issue
@@ -187,6 +188,8 @@ def load_document(state: State, tool_call_id: CallId) -> Command:
     """Read the text of the uploaded PDF. This is the first step: every other step works on the text it keeps."""
     _status("Reading the PDF")
     reader = PdfReader(state["document_path"])
+    if len(reader.pages) > MAX_PAGES:
+        raise ValueError(f"the PDF has {len(reader.pages)} pages: a certificate of more than {MAX_PAGES} is not accepted")
     text = "\n".join(page.extract_text() or "" for page in reader.pages)
     return _reply({"document_text": text}, tool_call_id, "load_document", f"Read {len(text)} characters from the PDF.")
 

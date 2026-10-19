@@ -4,23 +4,26 @@ import queue
 import threading
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from langgraph.types import Command
-from pydantic import BaseModel
 
-import memory
 from auth import require_user
 from jobs import Jobs, open_checkpointer
+from middleware import UploadLimit
+from react_agent import memory
 from react_agent.react_agent import graph
-from schema.schema import Scope
+from schema.schema import Answer, Decision
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent / "data"
+
+# one person's jobs that are queued or running: each one pays for model calls
+MAX_ACTIVE_JOBS = int(os.getenv("MAX_ACTIVE_JOBS_PER_USER", "20"))
 
 RECURSION_LIMIT = 40  # graph steps a run may take: the model decides how many, a normal check takes about 18
 
@@ -111,6 +114,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(UploadLimit)
 # local development: the Next.js dev server calls this API straight from the browser (CORS_ORIGINS: comma-separated, to allow another)
 origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST"], allow_headers=["Authorization"])
@@ -128,7 +132,12 @@ router = APIRouter(dependencies=[Depends(require_user)])
 @router.post("/jobs", status_code=202)
 def create_job(file: UploadFile, user: Annotated[dict, Depends(require_user)]):
     """Queue the agent to analyze an uploaded CoA PDF. Poll GET /jobs/{id} for its progress and result."""
+    if file.file.read(5) != b"%PDF-":  # a PDF starts with its magic bytes; anything else would only fail in a worker
+        raise HTTPException(status_code=415, detail="only PDF files are accepted")
+    file.file.seek(0)
     store.upsert_user(user["sub"], user.get("email"), user.get("name"))  # the run points to its owner
+    if store.active_count(user["sub"]) >= MAX_ACTIVE_JOBS:
+        raise HTTPException(status_code=429, detail=f"{MAX_ACTIVE_JOBS} of your documents are being analyzed: wait for some to finish")
     job_id = store.create(file.filename or "document.pdf", file.file, owner=user["sub"])
     job = store.get(job_id)  # before a worker can take it, so the answer is still "queued"
     pending.put(job_id)
@@ -161,12 +170,6 @@ def get_pdf(job_id: str):
     return FileResponse(store.pdf_path(job_id), media_type="application/pdf", filename=job["filename"], content_disposition_type="inline")
 
 
-class Answer(BaseModel):
-    answers: dict[str, str]  # test name -> the answer; a test left out or blank keeps the agent's verdict
-    by: str
-    remember: dict[str, Scope] = {}  # test name -> who the answer is kept for; a test left out gets the default, DEFAULT_SCOPE
-
-
 @router.post("/jobs/{job_id}/answer")
 def answer_job(job_id: str, body: Answer):
     """Answer what a paused agent asked (the job's `question`); the job is queued again and the agent continues with it."""
@@ -186,12 +189,6 @@ def answer_job(job_id: str, body: Answer):
         raise HTTPException(status_code=409, detail="the agent is not waiting for an answer")
     pending.put(job_id)
     return store.get(job_id, with_spec=False)
-
-
-class Decision(BaseModel):
-    decision: Literal["approved", "rejected", "on_hold"]
-    by: str
-    reason: str = ""
 
 
 @router.post("/jobs/{job_id}/decision")

@@ -2,8 +2,8 @@ import os
 
 import pytest
 
-import memory
 from jobs import Jobs
+from react_agent import memory
 from tests.conftest import connect
 
 CLARIFICATION = {"test": "Lead", "reason": "The unit is ppb.", "answer": "It is ppm.", "by": "QA Anna", "scope": "product"}
