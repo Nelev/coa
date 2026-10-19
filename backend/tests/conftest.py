@@ -1,12 +1,18 @@
+import os
+import uuid
+
+import psycopg
 import pytest
 from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer as real_stream_writer
+from psycopg.sql import SQL, Identifier
 from pydantic import BaseModel
 
 import auth
 import main
 import notify
 from agent import agent
+from jobs import in_schema
 from react_agent import tools as react_tools
 from schema import schema
 
@@ -106,3 +112,24 @@ def mails(monkeypatch):
     sent = []
     monkeypatch.setattr(notify, "send_mail", lambda subject, body: sent.append((subject, body)) or True)
     return sent
+
+
+@pytest.fixture
+def database(monkeypatch):
+    """A database of its own for the test: a schema for the jobs tables and one for the agent's checkpoints, dropped afterwards. It
+    yields the name of the jobs schema.
+
+    Needs a Postgres with pgvector: TEST_DATABASE_URL, by default the one `docker compose up -d db` starts. DATABASE_URL (the real one,
+    which backend/.env may hold) is never used here.
+    """
+    base = os.getenv("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/coa")
+    name = f"test_{uuid.uuid4().hex[:12]}"
+    checkpoints = f"{name}_checkpoints"  # made by open_checkpointer
+    with psycopg.connect(base, autocommit=True) as admin:
+        admin.execute(SQL("CREATE SCHEMA {}").format(Identifier(name)))
+    monkeypatch.setenv("DATABASE_URL", in_schema(base, name))
+    monkeypatch.setenv("CHECKPOINT_SCHEMA", checkpoints)
+    yield name
+    with psycopg.connect(base, autocommit=True) as admin:
+        for dropped in (name, checkpoints):
+            admin.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(Identifier(dropped)))

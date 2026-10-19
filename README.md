@@ -3,24 +3,6 @@
 An agent that reads a **Certificate of Analysis (CoA)** sent by a supplier to a plant, extracts its data,
 and checks the reported results against the **plant's own specification** for that material.
 
-## Status
-
-| Part | State |
-|---|---|
-| PDF text extraction | done |
-| Validation that the document is a CoA (LLM), first step after reading the PDF | done |
-| Structured extraction of the CoA (LLM) | done |
-| Comparison against plant specs (LLM) → `issues` | done |
-| Report page: model lays out the results as a json-render UI spec, rendered by the frontend | done |
-| Pause / resume (`is_running`, `is_paused`) | state fields only, not wired |
-| Plant checks beyond the test table (`approved_suppliers`, `min_remaining_shelf_life_days` in the ERP data) | **not checked**: the data is there, nothing reads it (see [Known limitations](#known-limitations)) |
-| Two implementations of the agent, built for development and learning: a fixed graph (`backend/agent/`) and a ReAct agent (`backend/react_agent/`); the API runs the ReAct one | done |
-| The agent is a ReAct loop of two nodes, `agent` (the model, with the tools bound) and `tools` (runs what it called); every step of the check is a tool, and the model picks the next one | done |
-| Tracing of every run in [LangSmith](https://smith.langchain.com/) | done, opt-in through environment variables only (no code): see [Tracing](#tracing-langsmith) |
-| Mail when a lot is non-conforming | done (SMTP, sent by the `notify_quality_team` tool, which refuses any other outcome; a failure is logged as a warning and never fails the job) |
-| API: `POST /jobs` queues the agent on an uploaded PDF; `GET /jobs` and `GET /jobs/{id}` return the progress, the UI spec and the tokens and cost (`input_tokens`, `output_tokens`, `cost_usd`) of the run's model calls; `GET /jobs/{id}/pdf` returns the certificate; `POST /jobs/{id}/answer` answers what a paused agent asks (the job is `needs_input` and carries its `question`); `POST /jobs/{id}/decision` records a person's decision | done (jobs are kept in SQLite and survive restarts; CORS allows `http://localhost:3000` unless `CORS_ORIGINS` (comma-separated) says otherwise; every `/jobs` endpoint requires a WorkOS access token, but any signed-in person can see and decide every job, and `by` is the name the frontend sends) |
-| Frontend (Next.js + shadcn dashboard) | WorkOS AuthKit sign-in; light, dark or system theme (user menu). `/login` is the front door: a card that continues to WorkOS sign-in, over an animated pharmaceutical line (vials scanned and tagged PASS, REVIEW or FAIL, and drifting molecules; still for reduced motion), and signed-out visitors are sent there with the page they asked for. `/` is an overview: counts that double as filters (all, needs attention, in progress, conforming, awaiting decision), search, and a table you can sort by its headers, with live progress per run, how long each took, and its cost and tokens; the filter and sort are in the address. `/runs/[id]` opens with the lot, the verdict and a bar of the test results, then the report (with an Activity tab of the steps, and links to each finding), a link to open the CoA, and the decision: approve, put on hold or reject, as the signed-in person, with a reason, in a column beside the report (a bottom sheet on a phone); rejecting, holding or overriding the agent asks for confirmation first, and toasts say what was recorded. Upload with the button or by dropping PDFs anywhere; runs come back after a reload |
-
 The plant limits in `backend/docs/erp_demo.json` are **placeholder values**, not real plant data.
 
 ## How the agent works
@@ -178,6 +160,7 @@ and pick a CoA PDF. The report appears after about a minute.
 
 ```
 docs/images/        screenshots used in this README
+docker-compose.yml  the stack: Postgres with pgvector (db), the API (backend) and the frontend
 backend/
   react_agent/      the ReAct agent main.py runs (the second implementation): the agent (react_agent.py), the steps of the check as tools (tools.py), its prompts (prompts.py) and state (state.py)
   agent/            the fixed graph, the first implementation (agent.py, prompts.py, state.py), and the get_material and send_email tools (tools.py) that the ReAct agent's tools use
@@ -189,12 +172,14 @@ backend/
     sample_coa_defective.pdf      CoA with five seeded defects
     erp_demo.json                 materials with their plant requirements
   scripts/eval_compare.py         end-to-end check against the real model (runs the fixed graph)
-  tests/                          unit tests (mocked model): API and queue, sign-in, comparison, validation, mail
+  tests/                          unit tests (mocked model, a real Postgres): API and queue, database, sign-in, comparison, validation, mail
   main.py                         FastAPI app: /health, the /jobs endpoints (create, list, get, pdf, decision), plus the job queue and its workers
   auth.py                         checks the WorkOS access token on every /jobs request
   notify.py                       the mail about a non-conforming lot (SMTP): its text, and the sending the notify_quality_team and send_email tools do
-  jobs.py                         the jobs table (SQLite, with the decisions) and the uploaded PDFs; data lives in backend/data/ (gitignored)
-frontend/           Next.js + shadcn dashboard, light / dark / system theme (tokens in app/globals.css, contrast checked by lib/contrast.test.ts)
+  jobs.py                         the jobs store (the `runs` and `users` tables in Postgres, with the decisions), the uploaded PDFs (in backend/data/, gitignored) and `open_checkpointer`, the agent's Postgres checkpointer
+  migrations/, alembic.ini        the database schema, as Alembic migrations (versions/0001_users_and_runs.py is the first); the API applies them when it starts
+  Dockerfile                      the API's image (one uvicorn process)
+frontend/           Next.js + shadcn dashboard, light / dark / system theme (tokens in app/globals.css, contrast checked by lib/contrast.test.ts); its Dockerfile builds the production image
   proxy.ts                         signs people in with WorkOS AuthKit; signed-out visitors go to /login
   app/(auth)/login/page.tsx        the login page; app/auth/ and app/sign-in/ hold the sign-in, callback, sign-out and token actions
   app/(app)/page.tsx               the overview; app/(app)/runs/[id]/page.tsx is the report page
@@ -228,13 +213,58 @@ with too little shelf life left, is not flagged.
 
 ## Running it
 
-Backend (Python 3.10+, developed on 3.14, with a virtualenv in `backend/.venv`):
+**With Docker** (Compose v2.24+): the database, the API and the frontend, each in a container. First put the settings described below in
+`backend/.env` and `frontend/.env.local` (the WorkOS redirect URI is `http://localhost:3000/auth/callback`), then:
+
+```bash
+docker compose up -d --build
+```
+
+Open <http://localhost:3000>; the API is on `localhost:8000`. `DATABASE_URL` and `CORS_ORIGINS` are set by `docker-compose.yml`; the
+uploaded PDFs are kept in the `uploads` volume and the database in `db-data`. The frontend's `NEXT_PUBLIC_*` values are written into its
+bundle when the image is built, so rebuild (`--build`) after changing them. To use other host ports set `BACKEND_PORT`, `FRONTEND_PORT` and
+`DB_PORT` (the WorkOS redirect URI has to follow the frontend's). `docker compose up -d db` starts only the database, for running the
+two from source, as follows.
+
+**From source.** Backend (Python 3.10+, developed on 3.14, with a virtualenv in `backend/.venv`):
 
 ```bash
 cd backend
 uv venv .venv   # first time only
 uv pip install --python .venv/bin/python -r requirements-dev.txt
 ```
+
+The jobs and the agent's checkpoints are kept in Postgres with the [pgvector](https://github.com/pgvector/pgvector) extension (for the
+semantic search to come). For development, `docker compose up -d db` (from the repository root) starts one on `localhost:5432`; any
+Postgres with pgvector does, and the role needs the right to create the `vector` extension and a schema. Point the API at it in `backend/.env`:
+
+```
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/coa
+```
+
+The schema is managed with [Alembic](https://alembic.sqlalchemy.org/) (`backend/migrations/`). The API applies the migrations that are
+missing when it starts, so a fresh database gets, in `public`, the tables `users` (the people who sign in) and `runs` (the jobs, each
+pointing to its `owner`) and `alembic_version` (which migration it is at); the agent's checkpoint tables are made by LangGraph in the
+schema `langgraph`. To change the schema, add a migration (there are no models, so it is written by hand) and start the API, or apply it
+yourself, from `backend/` with `DATABASE_URL` set:
+
+```bash
+.venv/bin/alembic revision -m "add a column"   # then edit the new file in migrations/versions/
+.venv/bin/alembic upgrade head                 # apply what is missing; `alembic downgrade -1` undoes the last one
+```
+
+The tests use their own schemas of the same database: `TEST_DATABASE_URL` (default: the one above) and never `DATABASE_URL`.
+
+To look inside the database (the container's user and password are `postgres`, the database is `coa`; a GUI such as DBeaver or TablePlus
+connects the same way):
+
+```bash
+docker compose exec db psql -U postgres -d coa
+```
+
+`\dt public.*` lists `users`, `runs` and `alembic_version`, `\dt langgraph.*` the checkpoint tables, `\d runs` the columns. The JSON in
+`runs` (`statuses`, `ui_spec`, `result`, `question`, `answer`) is stored as text: cast it to read it, for example
+`select result::jsonb from runs`.
 
 The model is reached through [OpenRouter](https://openrouter.ai/) (`openai/gpt-5-mini`). Put your key in
 `backend/.env` (gitignored; loaded automatically with `python-dotenv`):
@@ -248,7 +278,8 @@ The API needs a signed-in person for everything under `/jobs`: the frontend send
 `Authorization: Bearer ...` and the API checks it against WorkOS's public keys. Without `WORKOS_CLIENT_ID` it answers 503
 instead of running open. `/health` needs no token, so `curl` the jobs endpoints below with a token from a signed-in session.
 
-Each job records who uploaded it (`owner`, their sign-in id).
+Each job records who uploaded it (`owner`, their sign-in id). The first time someone uploads, the API adds them to `users` (their sign-in id,
+and their email and name when the access token carries them), and the job points to that row.
 
 When an analysis finds a lot **non-conforming**, the API can mail
 its summary (product, lot, supplier, test counts and a link to the job). Any SMTP provider works; add the settings to
@@ -314,8 +345,12 @@ Every setting, for reference (the backend reads the environment and `backend/.en
 | `OPENROUTER_API_KEY` | backend | required: the model is reached through OpenRouter |
 | `WORKOS_CLIENT_ID` | backend, frontend | required: the same value in both; without it the API answers 503 |
 | `MAX_CONCURRENT_RUNS` | backend | worker threads, default 2 |
-| `JOBS_DIR` | backend | where `jobs.db`, `checkpoints.db` and `uploads/` live, default `backend/data/` |
+| `DATABASE_URL` | backend | required: the Postgres (with pgvector) that holds the `users` and `runs` tables and the agent's checkpoints |
+| `CHECKPOINT_SCHEMA` | backend | the schema of the agent's checkpoint tables, default `langgraph` |
+| `TEST_DATABASE_URL` | tests | the Postgres the tests create their schemas in, default `postgresql://postgres:postgres@localhost:5432/coa` |
+| `JOBS_DIR` | backend | where the uploaded PDFs (`uploads/`) live, default `backend/data/` |
 | `CORS_ORIGINS` | backend | allowed browser origins, comma-separated, default `http://localhost:3000` |
+| `BACKEND_PORT`, `FRONTEND_PORT`, `DB_PORT` | docker compose | the host ports of the containers, default 8000, 3000 and 5432 |
 | `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_ENDPOINT`, `LANGSMITH_AGENT_ID`, `LANGSMITH_AGENT_ENVIRONMENT` | backend | optional: send a trace of every run to LangSmith, see [Tracing](#tracing-langsmith) |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `NOTIFY_EMAIL`, `APP_URL` | backend | the non-conforming mail, see above |
 | `WORKOS_API_KEY`, `WORKOS_COOKIE_PASSWORD`, `NEXT_PUBLIC_WORKOS_REDIRECT_URI` | frontend | WorkOS AuthKit (the cookie password is 32+ characters) |
@@ -375,7 +410,9 @@ A job looks like this:
 | Field | Meaning |
 |---|---|
 | `id` | the job id, which is also the agent's LangGraph `thread_id` |
-| `status` | `queued` (waiting for a worker), `running`, `done` or `error` |
+| `status` | `queued` (waiting for a worker), `running`, `needs_input` (the agent paused to ask a person), `done` or `error` |
+| `owner` | the sign-in id of the person who uploaded it (a row of `users`); `null` for jobs from before owners were recorded |
+| `question`, `answer` | what a paused agent asks (while `needs_input`) and the person's reply, as JSON; `null` otherwise |
 | `statuses` | what the nodes reported, in order. Each node calls `_status(...)` first thing, which writes `{"status": ...}` with LangGraph's `get_stream_writer()`; the worker streams the graph in the `custom` stream mode and appends each one |
 | `ui_spec` | the report, in `GET /jobs/{id}` only, once the job is `done`. The worker reads it from the run's checkpoint once the graph has finished, so only the report is copied into the job |
 | `error` | why the job failed, when `status` is `error` |
@@ -389,11 +426,11 @@ A job looks like this:
 How the queue works:
 
 - `MAX_CONCURRENT_RUNS` (default 2) worker threads take job ids from an in-memory queue. The jobs themselves are rows in
-  `backend/data/jobs.db`, and the uploaded PDFs are kept in `backend/data/uploads/` (set `JOBS_DIR` to move both): the certificate is the record a decision is about.
-- The agent is compiled with a SQLite checkpointer (`backend/data/checkpoints.db`) and run with the job id as its
+  the Postgres `runs` table, and the uploaded PDFs are kept in `backend/data/uploads/` (set `JOBS_DIR` to move them): the certificate is the record a decision is about.
+- The agent is compiled with a Postgres checkpointer (the `langgraph` schema) and run with the job id as its
   `thread_id`, so its state is saved after every step.
 - When the API starts, jobs that were running (the process died) go back to the queue. A job whose run had passed some
-  steps continues after the last finished one; one that had not starts over. Jobs are kept until you delete `backend/data/`.
+  steps continues after the last finished one; one that had not starts over. Jobs are kept until you delete them from the database.
 - The queue is per process: run one uvicorn worker.
 
 The frontend shows the `statuses` in order and knows nothing about the graph. Tools the model does not call
@@ -432,12 +469,13 @@ The component list in `RENDER_UI_PROMPT` (`backend/react_agent/prompts.py`, copi
 
 ```bash
 cd backend
+docker compose -f ../docker-compose.yml up -d db   # the tests need a Postgres with pgvector (TEST_DATABASE_URL)
 .venv/bin/python -m pytest -q           # unit tests, mocked model, no API key needed
 .venv/bin/python -m scripts.eval_compare   # calls the real model on both sample CoAs, diffs the verdicts
 ```
 
 The unit tests cover issue derivation, the retry and the fallback to `review`, the missing-spec routing, the job queue and
-restart behaviour, decisions, sign-in, and the mail (including the warning when it cannot be sent). The frontend has Vitest
+restart behaviour, decisions, the database (its tables, the migrations, the users), sign-in, and the mail (including the warning when it cannot be sent). The frontend has Vitest
 tests for the components and helpers.
 The eval script is slower (several model calls) and needs `OPENROUTER_API_KEY`. It exits non-zero if any
 verdict differs from the expected one. It covers the one-page conforming sample and the defective one, not the three-page sample.
@@ -445,14 +483,14 @@ verdict differs from the expected one. It covers the one-page conforming sample 
 ## Continuous integration
 
 GitHub Actions run on every pull request and on pushes to `main` (`.github/workflows/`). Each workflow only runs when
-its own folder changes. The same steps run locally:
+its own folder changes. The backend's tests run against a Postgres service container (`pgvector/pgvector`). The same steps run locally:
 
 | | Backend (`backend/`, Python 3.14) | Frontend (`frontend/`, Node 24) |
 |---|---|---|
 | Format | `.venv/bin/ruff format .` | `npm run format` |
 | Lint | `.venv/bin/ruff check .` | `npm run lint` (Biome) |
 | Build | `python -m compileall -q . && python -c "import main"` | `npm run build` (also type-checks) |
-| Test | `.venv/bin/python -m pytest -q` | `npm test` (Vitest) |
+| Test | `.venv/bin/python -m pytest -q` (needs the Postgres above) | `npm test` (Vitest) |
 
 ## Known limitations
 
@@ -466,9 +504,11 @@ its own folder changes. The same steps run locally:
   too little shelf life left still comes out as conforming. Only the test table is compared.
 - Everything signed in sees everything: each job records its `owner`, but the API does not filter or check it, so any
   signed-in person can list every job, open its PDF and decide it. `by` on a decision and an answer is free text: the frontend fills it with the signed-in person's name, but the API does not check it.
+- `users` has the sign-in id, and the email and name only when the access token carries them, so those can be empty. Nothing else reads the table yet: `decided_by` and `by` stay free text, not a link to a user.
 - An upload is not checked: no size limit, and no check that it is a PDF before a worker picks it up (a non-PDF becomes a failed job).
-- The queue is in memory and per process, and the API must run as one uvicorn worker. Jobs and uploads live in
-  `backend/data/` with no cleanup.
+- The API applies the migrations when it starts, which is safe for one process. With several, apply them first (`alembic upgrade head`) instead of letting them race.
+- The queue is in memory and per process, and the API must run as one uvicorn worker. Jobs live in the database and the uploads in
+  `backend/data/`, with no cleanup; the uploads are on the API's disk, not in the database.
 - With LangSmith tracing on, the CoA text and the model's replies leave the machine for LangSmith, and nothing marks which traces belong to a
   job beyond its `thread_id`; the job and the UI do not link to them.
 - A failed mail is only a log line; nothing on the job or in the UI says that the notification was not sent.
