@@ -72,3 +72,37 @@ class Issue(BaseModel):
     test: str | None = None
     supplier_result: str | None = None
     plant_requirement: str | None = None
+
+
+# what a person's answer is about, to filter the memory by; the model picks one, and anything else is `other`
+TOPICS = (
+    "unit_mismatch",
+    "detection_limit",
+    "qualitative_wording",
+    "missing_result",
+    "unreadable_value",
+    "spec_ambiguity",
+    "other",
+)
+
+
+def _known_topic(value):
+    topic = str(value).strip().lower().replace(" ", "_").replace("-", "_")
+    return topic if topic in TOPICS else "other"
+
+
+class ClarificationNote(BaseModel):
+    test: Clean = Field(description="The test name, verbatim")
+    summary: Clean = Field(
+        description="One sentence stating the rule the answer gives, so that it can be applied to another lot: no lot number, date or name"
+    )
+    topic: Annotated[str, BeforeValidator(_known_topic)] = Field(description=f"Exactly one of: {', '.join(TOPICS)}")
+
+
+class ClarificationNotes(BaseModel):
+    notes: list[ClarificationNote] = Field(description="Exactly one note per answer given")
+
+
+# who an answer to a flagged check is kept for: the lots of that product, every product, or nobody (this lot only: nothing is saved)
+Scope = Literal["product", "global", "none"]
+DEFAULT_SCOPE: Scope = "product"

@@ -23,26 +23,31 @@ SUMMARY = (
 )
 
 
-def in_schema(dsn: str, schema: str) -> str:
-    """`dsn` with the search_path of `schema`: the tables a connection creates, and finds by their bare name, are the schema's."""
-    return make_conninfo(dsn, options=f"-csearch_path={schema}")
+def in_schema(dsn: str, *schemas: str) -> str:
+    """`dsn` with the search_path of `schemas`: the tables a connection creates, and finds by their bare name, are the first one's."""
+    return make_conninfo(dsn, options=f"-csearch_path={','.join(schemas)}")
+
+
+def langgraph_schema(dsn: str) -> str:
+    """The schema of the agent's own tables (CHECKPOINT_SCHEMA, default `langgraph`): its checkpoints and its memory. Made if missing."""
+    schema = os.getenv("CHECKPOINT_SCHEMA") or "langgraph"
+    with psycopg.connect(dsn, autocommit=True) as db:
+        db.execute(SQL("CREATE SCHEMA IF NOT EXISTS {}").format(Identifier(schema)))
+    return schema
 
 
 @contextmanager
 def open_checkpointer(dsn: str) -> Generator[PostgresSaver, None, None]:
-    """The agent's checkpointer, in its own schema (CHECKPOINT_SCHEMA, default `langgraph`), created with its tables when missing.
+    """The agent's checkpointer, in LangGraph's schema, created with its tables when missing.
 
     PostgresSaver has no schema option: it creates its tables where the connection's search_path points.
     """
-    schema = os.getenv("CHECKPOINT_SCHEMA") or "langgraph"
-    with psycopg.connect(dsn, autocommit=True) as db:
-        db.execute(SQL("CREATE SCHEMA IF NOT EXISTS {}").format(Identifier(schema)))
-    with PostgresSaver.from_conn_string(in_schema(dsn, schema)) as checkpointer:
+    with PostgresSaver.from_conn_string(in_schema(dsn, langgraph_schema(dsn))) as checkpointer:
         checkpointer.setup()  # nothing happens when the tables exist
         yield checkpointer
 
 
-def _now() -> int:
+def now_ms() -> int:
     return int(time.time() * 1000)
 
 
@@ -127,7 +132,7 @@ class Jobs:
         """Mark the job running. A run that starts over drops the statuses of its earlier attempt; one that resumes keeps them."""
         reset = "" if keep_statuses else ", statuses = '[]'"
         sql = f"UPDATE runs SET status = 'running', question = NULL, started_at = COALESCE(started_at, %s){reset} WHERE id = %s"
-        self._execute(sql, (_now(), job_id))
+        self._execute(sql, (now_ms(), job_id))
 
     def wait_for_input(self, job_id: str, question: dict) -> None:
         """The agent paused to ask a person: the job waits, with the question, until `answer` is called. No worker is held meanwhile."""
@@ -146,7 +151,7 @@ class Jobs:
             "UPDATE runs SET status = 'done', ui_spec = %s, result = %s, finished_at = %s, "
             "input_tokens = %s, output_tokens = %s, cost_usd = %s WHERE id = %s"
         )
-        self._execute(sql, (json.dumps(ui_spec), None if result is None else json.dumps(result), _now(), *_usage_columns(usage), job_id))
+        self._execute(sql, (json.dumps(ui_spec), None if result is None else json.dumps(result), now_ms(), *_usage_columns(usage), job_id))
 
     def decide(self, job_id: str, decision: str, by: str, reason: str) -> bool:
         """Record a person's decision on a finished job. False if the job is not done or already has a final decision."""
@@ -154,14 +159,14 @@ class Jobs:
             "UPDATE runs SET decision = %s, decided_by = %s, decided_at = %s, reason = %s "
             "WHERE id = %s AND status = 'done' AND (decision IS NULL OR decision = 'on_hold') RETURNING id"
         )
-        return bool(self._execute(sql, (decision, by, _now(), reason, job_id)))  # one statement: two people cannot both win
+        return bool(self._execute(sql, (decision, by, now_ms(), reason, job_id)))  # one statement: two people cannot both win
 
     def fail(self, job_id: str, message: str, usage: dict) -> None:
         sql = (
             "UPDATE runs SET status = 'error', error = %s, finished_at = %s, "
             "input_tokens = %s, output_tokens = %s, cost_usd = %s WHERE id = %s"
         )
-        self._execute(sql, (message, _now(), *_usage_columns(usage), job_id))
+        self._execute(sql, (message, now_ms(), *_usage_columns(usage), job_id))
 
     def requeue_unfinished(self) -> list[str]:
         """After a restart: the jobs that were running go back to queued. Returns the ids of all queued jobs, oldest first."""

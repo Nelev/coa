@@ -6,6 +6,7 @@ import { useAccount } from "@/components/account-context";
 import { useToast } from "@/components/toaster";
 import { accessToken, forgetAccessToken } from "@/lib/access-token";
 import { startPolling } from "@/lib/poll";
+import type { Scope } from "@/lib/remember";
 import { isActive } from "@/lib/runs";
 import { skippedToast, uploadSummary } from "@/lib/uploads";
 
@@ -25,10 +26,30 @@ export type RunResult = {
   supplier: string | null;
 };
 
-// what a paused agent asks a person to review: each test it flagged as unsure, with its reason and the figures to answer by
+// what a person answered earlier to a check like the one asked: the answer, who gave it, when (a Date.now() value) and for which run; `match` says
+// whether it was for this test of this product (same_product) or for any product (similar)
+export type Precedent = {
+  id: string;
+  answer: string;
+  summary: string | null;
+  by: string | null;
+  at: number;
+  run_id: string;
+  lot: string | null;
+  match: "same_product" | "similar";
+};
+
+// what a paused agent asks a person to review: each test it flagged as unsure, with its reason, the figures to answer by and the answers
+// kept in the memory to checks like it (a run from before the memory has no `precedents`)
 export type Question = {
   id: string;
-  questions: { test: string; reason: string; supplier_result: string | null; plant_requirement: string | null }[];
+  questions: {
+    test: string;
+    reason: string;
+    supplier_result: string | null;
+    plant_requirement: string | null;
+    precedents?: Precedent[];
+  }[];
 };
 
 // statuses: what the agent reported while it worked, in order; the last one is what it is doing now.
@@ -228,8 +249,9 @@ const ReportContext = createContext<{
   dismissRun: (id: string) => void;
   // records the signed-in person's decision on a finished run (sent as `by`: their name); rejects with the server's reason when it refuses (a reason is missing, the lot was decided already)
   decide: (id: string, decision: Decision, reason: string) => Promise<void>;
-  // answers what a waiting run asks (by test name; a test left out stays a review) and queues it to continue; rejects with the server's reason
-  answer: (id: string, answers: Record<string, string>) => Promise<void>;
+  // answers what a waiting run asks (by test name; a test left out stays a review) and queues it to continue; `remember` says who each answer is
+  // kept for (by test name, as chosen; a test left out gets the server's default); rejects with the server's reason
+  answer: (id: string, answers: Record<string, string>, remember: Record<string, Scope>) => Promise<void>;
 } | null>(null);
 
 // Holds the runs shared by every page. The server queues and runs the jobs; this polls it for their progress while any is
@@ -342,7 +364,8 @@ export function ReportProvider({ children }: { children: ReactNode }) {
   }
 
   const decide = (id: string, decision: Decision, reason: string) => post(id, "decision", { decision, by: name, reason });
-  const answer = (id: string, answers: Record<string, string>) => post(id, "answer", { answers, by: name });
+  const answer = (id: string, answers: Record<string, string>, remember: Record<string, Scope>) =>
+    post(id, "answer", { answers, by: name, remember });
 
   return (
     <ReportContext

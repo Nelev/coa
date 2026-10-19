@@ -3,16 +3,90 @@
 import { useId, useState } from "react";
 
 import { ActingAs } from "@/components/acting-as";
+import { Summary } from "@/components/disclosure";
 import { FIELD } from "@/components/field";
 import { Problem } from "@/components/problem";
-import { type Question, type Run, useReport } from "@/components/report-context";
+import { type Precedent, type Question, type Run, useReport } from "@/components/report-context";
 import { useToast } from "@/components/toaster";
 import { Button } from "@/components/ui/button";
+import { formatMoment } from "@/lib/format";
+import { DEFAULT_SCOPE, SCOPES, type Scope } from "@/lib/remember";
 
 type Ask = Question["questions"][number];
 
-// one check the agent is unsure of: the test, why, the figures it is about, and a field for the answer
-function QuestionField({ ask, value, onChange }: { ask: Ask; value: string; onChange: (value: string) => void }) {
+// who an answer is kept for: a choice among the scopes, under the answer it is about (see lib/remember.ts)
+export function RememberChoice({ value, onChange }: { value: Scope; onChange: (value: Scope) => void }) {
+  const hint = useId();
+  const name = useId();
+  return (
+    <fieldset aria-describedby={hint} className="flex min-w-0 flex-col gap-1">
+      <legend className="text-xs font-medium">Keep this answer for</legend>
+      <div className="flex flex-wrap gap-x-4 gap-y-1">
+        {SCOPES.map((scope) => (
+          <label key={scope.value} className="flex items-center gap-1.5 text-sm">
+            <input
+              type="radio"
+              name={name}
+              value={scope.value}
+              checked={value === scope.value}
+              onChange={() => onChange(scope.value)}
+              className="accent-primary"
+            />
+            {scope.label}
+          </label>
+        ))}
+      </div>
+      <p id={hint} className="text-xs text-subtle-foreground">
+        The agent saves it with a summary and a topic, for later reviews. "This lot only" saves nothing.
+      </p>
+    </fieldset>
+  );
+}
+
+const MATCH = { same_product: "Same product and test", similar: "Similar case" };
+
+// the answers kept earlier to checks like this one, in a native <details> (it opens with the keyboard and is announced as a disclosure). The
+// agent only shows them: a person decides, so using one copies it into the field, where it can be edited.
+export function Precedents({ precedents, onUse }: { precedents?: Precedent[]; onUse: (answer: string) => void }) {
+  if (!precedents?.length) return null;
+  return (
+    <details className="group/details rounded-lg border text-sm">
+      <Summary className="rounded-lg px-3 py-2 text-xs">Answered before ({precedents.length})</Summary>
+      <ul className="flex flex-col gap-3 px-3 pt-1 pb-3">
+        {precedents.map((precedent) => (
+          <li key={precedent.id} className="flex flex-col gap-1">
+            <p>{precedent.answer}</p>
+            <p className="text-xs text-subtle-foreground">
+              {[MATCH[precedent.match], precedent.by, formatMoment(precedent.at), precedent.lot && `Lot ${precedent.lot}`]
+                .filter(Boolean)
+                .join(" · ")}
+            </p>
+            {precedent.summary ? <p className="text-xs text-muted-foreground">{precedent.summary}</p> : null}
+            <Button type="button" variant="outline" size="xs" className="self-start" onClick={() => onUse(precedent.answer)}>
+              Use this answer
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+// one check the agent is unsure of: the test, why, the figures it is about, the answers given before to checks like it, a field for the answer
+// and, once there is one, who it is kept for
+function QuestionField({
+  ask,
+  value,
+  scope,
+  onChange,
+  onScope,
+}: {
+  ask: Ask;
+  value: string;
+  scope: Scope;
+  onChange: (value: string) => void;
+  onScope: (scope: Scope) => void;
+}) {
   const id = useId();
   const figures = [ask.supplier_result && `CoA: ${ask.supplier_result}`, ask.plant_requirement && `Plant requires: ${ask.plant_requirement}`]
     .filter(Boolean)
@@ -24,6 +98,7 @@ function QuestionField({ ask, value, onChange }: { ask: Ask; value: string; onCh
         <span className="block font-normal text-muted-foreground">{ask.reason}</span>
       </label>
       {figures && <p className="text-xs text-subtle-foreground">{figures}</p>}
+      <Precedents precedents={ask.precedents} onUse={onChange} />
       <textarea
         id={id}
         value={value}
@@ -32,6 +107,7 @@ function QuestionField({ ask, value, onChange }: { ask: Ask; value: string; onCh
         placeholder="Your review: what is right, or what to do"
         className={FIELD}
       />
+      {value.trim() ? <RememberChoice value={scope} onChange={onScope} /> : null}
     </div>
   );
 }
@@ -42,6 +118,7 @@ export function AnswerPanel({ run }: { run: Run }) {
   const { answer } = useReport();
   const { toast } = useToast();
   const [written, setWritten] = useState<Record<string, string>>({});
+  const [scopes, setScopes] = useState<Record<string, Scope>>({});
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const [empty, setEmpty] = useState(false);
@@ -51,7 +128,7 @@ export function AnswerPanel({ run }: { run: Run }) {
     setPending(true);
     setError(undefined);
     try {
-      await answer(run.id, answers);
+      await answer(run.id, answers, scopes);
       toast({ tone: "info", title: "Answer sent", description: "The agent continues with it." });
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "the answer could not be sent");
@@ -80,10 +157,12 @@ export function AnswerPanel({ run }: { run: Run }) {
           key={ask.test}
           ask={ask}
           value={written[ask.test] ?? ""}
+          scope={scopes[ask.test] ?? DEFAULT_SCOPE}
           onChange={(value) => {
             setWritten((all) => ({ ...all, [ask.test]: value }));
             setEmpty(false);
           }}
+          onScope={(scope) => setScopes((all) => ({ ...all, [ask.test]: scope }))}
         />
       ))}
       <ActingAs label="Answering as" />

@@ -1,8 +1,12 @@
+import hashlib
+import math
 import os
+import re
 import uuid
 
 import psycopg
 import pytest
+from langchain_core.embeddings import Embeddings
 from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer as real_stream_writer
 from psycopg.sql import SQL, Identifier
@@ -10,6 +14,7 @@ from pydantic import BaseModel
 
 import auth
 import main
+import memory
 import notify
 from agent import agent
 from jobs import in_schema
@@ -54,6 +59,8 @@ class FakeLLM:
     def invoke(self, prompt):
         self.prompts.append(prompt)
         response = self.responses.pop(0)
+        if isinstance(response, Exception):  # a call that fails
+            raise response
         if isinstance(response, list):  # a list of checks is a comparison result
             return schema.ComparisonResult(checks=response)
         # a model instance is a structured result, a message is returned as it is; a string is a raw chat reply
@@ -126,6 +133,7 @@ def database(monkeypatch):
     name = f"test_{uuid.uuid4().hex[:12]}"
     checkpoints = f"{name}_checkpoints"  # made by open_checkpointer
     with psycopg.connect(base, autocommit=True) as admin:
+        admin.execute("CREATE EXTENSION IF NOT EXISTS vector SCHEMA public")  # the first migration makes it in the app
         admin.execute(SQL("CREATE SCHEMA {}").format(Identifier(name)))
     monkeypatch.setenv("DATABASE_URL", in_schema(base, name))
     monkeypatch.setenv("CHECKPOINT_SCHEMA", checkpoints)
@@ -133,3 +141,35 @@ def database(monkeypatch):
     with psycopg.connect(base, autocommit=True) as admin:
         for dropped in (name, checkpoints):
             admin.execute(SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(Identifier(dropped)))
+
+
+EMBEDDING_DIMENSIONS = 1536  # what a vector of FakeEmbeddings has
+
+
+class FakeEmbeddings(Embeddings):
+    """Vectors of the words of a text (1536 numbers, the size the store expects): texts that share words are similar, others are not."""
+
+    def embed_documents(self, texts):
+        vectors = []
+        for text in texts:
+            vector = [0.0] * EMBEDDING_DIMENSIONS
+            for word in re.findall(r"\w+", text.lower()):
+                vector[int(hashlib.sha256(word.encode()).hexdigest(), 16) % EMBEDDING_DIMENSIONS] += 1
+            norm = math.sqrt(sum(x * x for x in vector)) or 1
+            vectors.append([x / norm for x in vector])
+        return vectors
+
+    def embed_query(self, text):
+        return self.embed_documents([text])[0]
+
+
+@pytest.fixture(autouse=True)
+def fake_embeddings(monkeypatch):
+    """Nothing leaves the machine to embed an answer: the memory's vector store embeds with FakeEmbeddings."""
+    monkeypatch.setattr(memory, "get_embedder", FakeEmbeddings)
+    monkeypatch.setattr(memory, "MIN_SCORE", 0.5)  # FakeEmbeddings' scale: the words two texts share, not what the real model measures
+
+
+def connect():
+    """A connection to the test's database (see the `database` fixture)."""
+    return psycopg.connect(os.environ["DATABASE_URL"])
