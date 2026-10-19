@@ -1,0 +1,53 @@
+# The whole stack: Postgres with pgvector, the API and the frontend. `docker compose up -d --build`, then open http://localhost:3000.
+# The API reads backend/.env and the frontend frontend/.env.local, as in development; DATABASE_URL is set here, for the db service.
+# `docker compose up -d db` alone starts just the database, for running the API and the frontend from source (DATABASE_URL in
+# backend/.env: postgresql://postgres:postgres@localhost:5432/coa).
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: coa
+    ports:
+      - "127.0.0.1:${DB_PORT:-5432}:5432"  # the password is the development default: this machine only
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/coa
+      CORS_ORIGINS: http://localhost:${FRONTEND_PORT:-3000}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - uploads:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args: # what the browser calls: the published ports, not the service names
+        NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_PORT:-8000}
+        NEXT_PUBLIC_WORKOS_REDIRECT_URI: http://localhost:${FRONTEND_PORT:-3000}/auth/callback
+    env_file:
+      - path: ./frontend/.env.local
+        required: false
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      - backend
+
+volumes:
+  db-data:
+  uploads:
