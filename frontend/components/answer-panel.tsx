@@ -2,9 +2,10 @@
 
 import { useId, useState } from "react";
 
+import { ActingAs } from "@/components/acting-as";
+import { FIELD } from "@/components/field";
 import { Problem } from "@/components/problem";
 import { type Question, type Run, useReport } from "@/components/report-context";
-import { FIELD, ReviewerSelect, useReviewer } from "@/components/reviewer-select";
 import { useToast } from "@/components/toaster";
 import { Button } from "@/components/ui/button";
 
@@ -40,7 +41,6 @@ function QuestionField({ ask, value, onChange }: { ask: Ask; value: string; onCh
 export function AnswerPanel({ run }: { run: Run }) {
   const { answer } = useReport();
   const { toast } = useToast();
-  const [by, setBy] = useReviewer();
   const [written, setWritten] = useState<Record<string, string>>({});
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
@@ -51,7 +51,7 @@ export function AnswerPanel({ run }: { run: Run }) {
     setPending(true);
     setError(undefined);
     try {
-      await answer(run.id, answers, by);
+      await answer(run.id, answers);
       toast({ tone: "info", title: "Answer sent", description: "The agent continues with it." });
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "the answer could not be sent");
@@ -86,7 +86,7 @@ export function AnswerPanel({ run }: { run: Run }) {
           }}
         />
       ))}
-      <ReviewerSelect label="Answering as" by={by} onChange={setBy} />
+      <ActingAs label="Answering as" />
       {empty ? (
         <p role="alert" className="text-xs font-medium text-destructive">
           Write an answer, or choose to keep the agent's verdicts.

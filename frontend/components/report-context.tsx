@@ -2,6 +2,7 @@
 
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
 
+import { useAccount } from "@/components/account-context";
 import { useToast } from "@/components/toaster";
 import { accessToken, forgetAccessToken } from "@/lib/access-token";
 import { startPolling } from "@/lib/poll";
@@ -225,15 +226,16 @@ const ReportContext = createContext<{
   // tries an upload that failed again, or forgets it (it is not on the server, so there is nothing else to remove)
   retryUpload: (id: string) => void;
   dismissRun: (id: string) => void;
-  // records a person's decision on a finished run; rejects with the server's reason when it refuses (a reason is missing, the lot was decided already)
-  decide: (id: string, decision: Decision, by: string, reason: string) => Promise<void>;
+  // records the signed-in person's decision on a finished run (sent as `by`: their name); rejects with the server's reason when it refuses (a reason is missing, the lot was decided already)
+  decide: (id: string, decision: Decision, reason: string) => Promise<void>;
   // answers what a waiting run asks (by test name; a test left out stays a review) and queues it to continue; rejects with the server's reason
-  answer: (id: string, answers: Record<string, string>, by: string) => Promise<void>;
+  answer: (id: string, answers: Record<string, string>) => Promise<void>;
 } | null>(null);
 
 // Holds the runs shared by every page. The server queues and runs the jobs; this polls it for their progress while any is
 // unfinished, and loads the list again when the page opens, so a reload loses nothing.
 export function ReportProvider({ children }: { children: ReactNode }) {
+  const { name } = useAccount(); // who a decision or an answer is recorded as
   const [runs, setRuns] = useState<Run[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [offline, setOffline] = useState(false);
@@ -332,15 +334,15 @@ export function ReportProvider({ children }: { children: ReactNode }) {
     void startUploads([file]);
   }
 
-  // a person's input on a job (a decision, an answer): the server answers with the job as it is now
+  // the signed-in person's input on a job (a decision, an answer): the server answers with the job as it is now
   async function post(id: string, action: "decision" | "answer", body: object) {
     const init = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
     const job = (await request(`/jobs/${id}/${action}`, init).then((response) => response.json())) as Job;
     setRuns((all) => all.map((run) => (run.id === id ? toRun(job, run) : run))); // an answered run is queued again: active, so polling starts
   }
 
-  const decide = (id: string, decision: Decision, by: string, reason: string) => post(id, "decision", { decision, by, reason });
-  const answer = (id: string, answers: Record<string, string>, by: string) => post(id, "answer", { answers, by });
+  const decide = (id: string, decision: Decision, reason: string) => post(id, "decision", { decision, by: name, reason });
+  const answer = (id: string, answers: Record<string, string>) => post(id, "answer", { answers, by: name });
 
   return (
     <ReportContext

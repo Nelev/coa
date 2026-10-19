@@ -4,6 +4,7 @@ import { AnswerPanel } from "@/components/answer-panel";
 import type { Run } from "@/components/report-context";
 
 vi.mock("@/components/report-context", () => ({ useReport: () => ({ answer: vi.fn() }) }));
+vi.mock("@/components/account-context", () => ({ useAccount: () => ({ name: "Anna Rossi", email: "anna@example.com" }) }));
 vi.mock("@/components/toaster", () => ({ useToast: () => ({ toast: vi.fn(), dismiss: vi.fn() }) }));
 
 const ask = {
@@ -44,6 +45,7 @@ describe("AnswerPanel", () => {
     expect(html).toContain("Send answer");
     expect(html).toContain("Keep the agent&#x27;s verdicts"); // the markup escapes the apostrophe
     expect(html).toContain("Answering as");
+    expect(html).toContain("Anna Rossi"); // the signed-in person: there is nobody to choose
     expect(html).not.toContain('disabled=""');
   });
 });

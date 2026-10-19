@@ -3,9 +3,11 @@
 import dynamic from "next/dynamic";
 import { useId, useRef, useState } from "react";
 
+import { useAccount } from "@/components/account-context";
+import { ActingAs } from "@/components/acting-as";
+import { FIELD } from "@/components/field";
 import { Problem } from "@/components/problem";
 import { type Decision, type Run, useReport } from "@/components/report-context";
-import { FIELD, ReviewerSelect, useReviewer } from "@/components/reviewer-select";
 import { runTitle } from "@/components/run-summary";
 import { DecisionChip } from "@/components/status-chip";
 import { useToast } from "@/components/toaster";
@@ -43,7 +45,7 @@ const DecisionConfirm = dynamic(() => import("@/components/decision-confirm").th
 function DecisionForm({ run, onDone }: { run: Run; onDone?: () => void }) {
   const { decide } = useReport();
   const { toast } = useToast();
-  const [by, setBy] = useReviewer();
+  const { name } = useAccount();
   const [reason, setReason] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
@@ -59,8 +61,8 @@ function DecisionForm({ run, onDone }: { run: Run; onDone?: () => void }) {
     setPending(true);
     setError(undefined);
     try {
-      await decide(run.id, decision, by, reason.trim());
-      toast(decisionToast(decision, runTitle(run), by));
+      await decide(run.id, decision, reason.trim());
+      toast(decisionToast(decision, runTitle(run), name));
       setAsking(null);
       setReason("");
       onDone?.();
@@ -90,7 +92,7 @@ function DecisionForm({ run, onDone }: { run: Run; onDone?: () => void }) {
   return (
     <>
       {run.decision === "on_hold" && <Summary run={run} />}
-      <ReviewerSelect label="Deciding as" by={by} onChange={setBy} />
+      <ActingAs label="Deciding as" />
       <div className="flex flex-col gap-1.5">
         <label htmlFor={ids.reason} className="text-xs font-medium text-muted-foreground">
           Reason
@@ -132,7 +134,7 @@ function DecisionForm({ run, onDone }: { run: Run; onDone?: () => void }) {
         <DecisionConfirm
           run={run}
           decision={asking}
-          by={by}
+          by={name}
           reason={reason}
           pending={pending}
           error={error}

@@ -1,6 +1,7 @@
 import { withAuth } from "@workos-inc/authkit-nextjs";
 import { cookies } from "next/headers";
 
+import { AccountProvider } from "@/components/account-context";
 import { AppHeader } from "@/components/app-header";
 import { LiveAnnouncer } from "@/components/live-announcer";
 import { OfflineBanner } from "@/components/offline-banner";
@@ -18,23 +19,25 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     picture: user.profilePictureUrl ?? undefined,
   };
   return (
-    <ToastProvider>
-      <ReportProvider>
-        <PageDropzone>
-          <a
-            href="#main"
-            className="sr-only rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50"
-          >
-            Skip to main content
-          </a>
-          <AppHeader account={account} theme={parseTheme(jar.get(THEME_COOKIE)?.value)} />
-          <main id="main" tabIndex={-1} className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5 p-4 outline-none md:p-6">
-            <OfflineBanner />
-            {children}
-          </main>
-          <LiveAnnouncer />
-        </PageDropzone>
-      </ReportProvider>
-    </ToastProvider>
+    <AccountProvider account={account}>
+      <ToastProvider>
+        <ReportProvider>
+          <PageDropzone>
+            <a
+              href="#main"
+              className="sr-only rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50"
+            >
+              Skip to main content
+            </a>
+            <AppHeader account={account} theme={parseTheme(jar.get(THEME_COOKIE)?.value)} />
+            <main id="main" tabIndex={-1} className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5 p-4 outline-none md:p-6">
+              <OfflineBanner />
+              {children}
+            </main>
+            <LiveAnnouncer />
+          </PageDropzone>
+        </ReportProvider>
+      </ToastProvider>
+    </AccountProvider>
   );
 }
