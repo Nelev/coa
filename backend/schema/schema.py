@@ -106,3 +106,16 @@ class ClarificationNotes(BaseModel):
 # who an answer to a flagged check is kept for: the lots of that product, every product, or nobody (this lot only: nothing is saved)
 Scope = Literal["product", "global", "none"]
 DEFAULT_SCOPE: Scope = "product"
+
+
+# what the API takes from a person, in the body of POST /jobs/{id}/answer and POST /jobs/{id}/decision
+class Answer(BaseModel):
+    answers: dict[str, str]  # test name -> the answer; a test left out or blank keeps the agent's verdict
+    by: str
+    remember: dict[str, Scope] = {}  # test name -> who the answer is kept for; a test left out gets the default, DEFAULT_SCOPE
+
+
+class Decision(BaseModel):
+    decision: Literal["approved", "rejected", "on_hold"]
+    by: str
+    reason: str = ""

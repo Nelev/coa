@@ -8,8 +8,9 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 import erp
-import memory
 import notify
+from react_agent import memory
+from react_agent import tools as agent_tools
 from react_agent.react_agent import app, graph
 from react_agent.tools import tools
 from schema import schema
@@ -49,6 +50,15 @@ def check_sequence(verdict, **flags):
         call("render_ui"),
         SPEC,
     ]
+
+
+def test_a_document_with_too_many_pages_fails_before_any_model_call(fake_llm, monkeypatch):
+    monkeypatch.setattr(agent_tools, "MAX_PAGES", 2)
+    llm = fake_llm(call("load_document"))
+    pdf = PDF.replace("citric_acid.pdf", "citric_acid_3pages.pdf")  # three pages
+    with pytest.raises(ValueError, match="3 pages"):
+        app.invoke({"document_path": pdf, "filename": "lot.pdf", "job_id": "job1"})
+    assert len(llm.prompts) == 1  # only the agent's own call that chose load_document
 
 
 def test_the_agent_has_two_nodes():

@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 import erp
 import main
+import middleware
 from agent.agent import DOCS_DIR
 from jobs import SUMMARY, Jobs, open_checkpointer
 from react_agent.react_agent import graph
@@ -86,8 +87,12 @@ def start_app(tmp_path, monkeypatch, signed_in, database):
         client.__exit__(None, None, None)
 
 
+def upload(client, content=b"%PDF-fake", name="coa.pdf"):
+    return client.post("/jobs", files={"file": (name, content, "application/pdf")})
+
+
 def submit(client, content=b"%PDF-fake", name="coa.pdf"):
-    response = client.post("/jobs", files={"file": (name, content, "application/pdf")})
+    response = upload(client, content, name)
     assert response.status_code == 202
     return response.json()
 
@@ -262,6 +267,52 @@ def test_at_most_the_configured_number_of_jobs_run_at_once(start_app, monkeypatc
     ids = [submit(client)["id"] for _ in range(5)]
     assert {wait_for_end(client, job_id)["status"] for job_id in ids} == {"done"}
     assert most == 2
+
+
+def test_an_upload_that_is_not_a_pdf_is_refused(start_app):
+    client = start_app()
+    response = upload(client, b"<html>not a pdf</html>")
+    assert response.status_code == 415
+    assert client.get("/jobs").json() == []
+
+
+def test_an_upload_over_the_size_limit_is_refused_before_it_is_read(start_app, monkeypatch):
+    client = start_app()
+    monkeypatch.setattr(middleware, "MAX_UPLOAD_BYTES", 1000)
+    response = upload(client, b"%PDF-" + b"0" * 2000)
+    assert response.status_code == 413
+    assert client.get("/jobs").json() == []
+
+
+def test_an_upload_without_a_content_length_is_refused(start_app):
+    client = start_app()
+
+    def chunks():  # a body of unknown length is sent chunked: nothing says how much will be spooled
+        yield b"%PDF-"
+
+    response = client.post("/jobs", content=chunks(), headers={"Content-Type": "multipart/form-data; boundary=x"})
+    assert response.status_code == 411
+
+
+def test_a_person_can_have_only_so_many_jobs_in_progress(start_app, monkeypatch):
+    release = threading.Event()
+
+    class BlockedAgent(FakeAgent):
+        def play(self, inputs):
+            release.wait(10)
+            yield from super().play(inputs)
+
+    client = start_app(max_runs=1)
+    monkeypatch.setattr(main, "agent_app", BlockedAgent())
+    monkeypatch.setattr(main, "MAX_ACTIVE_JOBS", 2)
+    try:
+        ids = [submit(client)["id"] for _ in range(2)]
+        assert upload(client).status_code == 429
+        assert len(client.get("/jobs").json()) == 2
+    finally:
+        release.set()
+    assert {wait_for_end(client, job_id)["status"] for job_id in ids} == {"done"}
+    submit(client)  # the finished jobs no longer count
 
 
 def test_an_unknown_job_is_a_404(start_app):

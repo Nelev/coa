@@ -12,7 +12,7 @@ import { parseTheme, THEME_COOKIE } from "@/lib/theme";
 
 // everything behind the sign-in: the header, the polling of the runs and the page-wide drop of PDFs. The login page has none of it.
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
-  const [{ user }, jar] = await Promise.all([withAuth({ ensureSignedIn: true }), cookies()]);
+  const [{ user, accessToken }, jar] = await Promise.all([withAuth({ ensureSignedIn: true }), cookies()]);
   const account = {
     name: [user.firstName, user.lastName].filter(Boolean).join(" ") || user.email,
     email: user.email,
@@ -21,7 +21,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <AccountProvider account={account}>
       <ToastProvider>
-        <ReportProvider>
+        <ReportProvider accessToken={accessToken}>
           <PageDropzone>
             <a
               href="#main"

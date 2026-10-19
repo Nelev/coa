@@ -4,13 +4,12 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useR
 
 import { useAccount } from "@/components/account-context";
 import { useToast } from "@/components/toaster";
-import { accessToken, forgetAccessToken } from "@/lib/access-token";
+import { seedAccessToken } from "@/lib/access-token";
+import { ApiError, json, LONG_TIMEOUT_MS, request } from "@/lib/api";
 import { startPolling } from "@/lib/poll";
 import type { Scope } from "@/lib/remember";
 import { isActive } from "@/lib/runs";
-import { skippedToast, uploadSummary } from "@/lib/uploads";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { mapLimit, skippedToast, uploadSummary } from "@/lib/uploads";
 
 // a person's decision on a finished analysis; approved and rejected are final, a lot on hold can be decided again
 export type Decision = "approved" | "rejected" | "on_hold";
@@ -142,35 +141,6 @@ function toRun(job: Job, previous?: Run): Run {
   return unchanged ? previous : run;
 }
 
-// every request carries the access token of the signed-in person; a 401 means it went stale, so it is asked for again once
-async function send(path: string, init?: RequestInit): Promise<Response> {
-  const token = await accessToken().catch(() => {
-    throw new Error("the session could not be refreshed, reload the page to sign in again");
-  });
-  const headers = new Headers(init?.headers);
-  headers.set("Authorization", `Bearer ${token}`);
-  return fetch(`${API_URL}${path}`, { ...init, headers }).catch(() => {
-    throw new Error("the server cannot be reached");
-  });
-}
-
-// an error says what the server said (its `detail`), or at least its status
-async function request(path: string, init?: RequestInit): Promise<Response> {
-  let response = await send(path, init);
-  if (response.status === 401) {
-    forgetAccessToken();
-    response = await send(path, init);
-  }
-  if (!response.ok) {
-    const detail = await response.json().then(
-      (body) => body.detail,
-      () => undefined,
-    );
-    throw new Error(typeof detail === "string" ? detail : `the server answered ${response.status}`);
-  }
-  return response;
-}
-
 // the blob URL of each certificate opened so far: an upload never changes, so opening it again costs nothing
 const pdfs = new Map<string, string>();
 
@@ -182,7 +152,7 @@ export async function openPdf(id: string): Promise<void> {
   try {
     let url = pdfs.get(id);
     if (!url) {
-      const blob = await request(`/jobs/${id}/pdf`).then((response) => response.blob());
+      const blob = await request(`/jobs/${id}/pdf`, { timeout: LONG_TIMEOUT_MS }).then((response) => response.blob());
       url = URL.createObjectURL(blob); // not revoked: a tab may be showing it
       pdfs.set(id, url);
     }
@@ -194,7 +164,7 @@ export async function openPdf(id: string): Promise<void> {
 }
 
 function fetchJobs(): Promise<Job[]> {
-  return request("/jobs").then((response) => response.json());
+  return request("/jobs").then(json<Job[]>);
 }
 
 // The requests for reports, kept by run: callers that ask while one is under way share it, and the report of a finished run never
@@ -207,7 +177,7 @@ export function fetchReport(id: string): Promise<unknown> {
   const known = reports.get(id);
   if (known) return known;
   const report = request(`/jobs/${id}`)
-    .then((response) => response.json() as Promise<Job>)
+    .then(json<Job>)
     .then((job) => {
       if (job.ui_spec == null) reports.delete(id);
       return job.ui_spec;
@@ -231,6 +201,8 @@ function merge(jobs: Job[], runs: Run[]): Run[] {
 // the renderer chunk (json-render, shadcn components, zod) is big: load it before a report is opened
 export const preloadReport = () => void import("@/components/report-renderer");
 
+const UPLOADS_AT_ONCE = 3;
+
 const isPdf = (file: File) => file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
 
 const ReportContext = createContext<{
@@ -241,6 +213,8 @@ const ReportContext = createContext<{
   loaded: boolean;
   // the server could not be reached by the last request
   offline: boolean;
+  // the server refused the session: polling has stopped, and the person has to sign in again
+  signedOut: boolean;
   // asks the server now instead of at the next attempt (which grows longer after each failure)
   retry: () => Promise<void>;
   upload: (files: File[]) => void;
@@ -256,18 +230,21 @@ const ReportContext = createContext<{
 
 // Holds the runs shared by every page. The server queues and runs the jobs; this polls it for their progress while any is
 // unfinished, and loads the list again when the page opens, so a reload loses nothing.
-export function ReportProvider({ children }: { children: ReactNode }) {
+export function ReportProvider({ accessToken, children }: { accessToken: string; children: ReactNode }) {
+  seedAccessToken(accessToken); // while rendering, not in an effect: the effects of the page below run before this one's, and they ask for the report
   const { name } = useAccount(); // who a decision or an answer is recorded as
   const [runs, setRuns] = useState<Run[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [offline, setOffline] = useState(false);
+  const [signedOut, setSignedOut] = useState(false);
   const { toast } = useToast();
   const wasOffline = useRef(false);
   const failedFiles = useRef(new Map<string, File>()); // the files of uploads that failed, to try them again; not state, nobody renders them
 
   const running = runs.filter(isActive).length;
   // while anything is unfinished, and while the server cannot be reached: with nothing running there is no other way to find out it is back
-  const polling = running > 0 || offline;
+  // (a refused session stops it: asking again only fails again)
+  const polling = (running > 0 || offline) && !signedOut;
   const inFlight = useRef(false);
 
   // whether the server answered
@@ -278,12 +255,18 @@ export function ReportProvider({ children }: { children: ReactNode }) {
       const jobs = await fetchJobs();
       setRuns((all) => merge(jobs, all));
       setOffline(false);
+      setSignedOut(false);
       if (wasOffline.current) {
         wasOffline.current = false;
         toast({ tone: "info", title: "The server is reachable again", description: "The list is up to date." });
       }
       return true;
-    } catch {
+    } catch (error) {
+      if (error instanceof ApiError && error.kind === "auth") {
+        setSignedOut(true); // the server answered: it is not offline, and the same session will not be accepted later either
+        setOffline(false);
+        return true;
+      }
       wasOffline.current = true;
       setOffline(true); // keep what we show and try again
       return false;
@@ -303,7 +286,7 @@ export function ReportProvider({ children }: { children: ReactNode }) {
     try {
       const body = new FormData();
       body.append("file", file);
-      return toRun(await request("/jobs", { method: "POST", body }).then((response) => response.json()));
+      return toRun(await request("/jobs", { method: "POST", body, timeout: LONG_TIMEOUT_MS }).then(json<Job>));
     } catch (error) {
       const message = error instanceof Error ? error.message : "the upload failed";
       const id = crypto.randomUUID();
@@ -323,14 +306,12 @@ export function ReportProvider({ children }: { children: ReactNode }) {
 
   // each run appears as soon as its upload ends; one toast says how the batch went
   async function startUploads(files: File[]) {
-    const results = await Promise.all(
-      files.map((file) =>
-        uploadOne(file).then((run) => {
-          setRuns((all) => [...all, run]);
-          return run;
-        }),
-      ),
-    );
+    // a few at a time: the server limits how many documents a person can have in progress
+    const results = await mapLimit(files, UPLOADS_AT_ONCE, async (file) => {
+      const run = await uploadOne(file);
+      setRuns((all) => [...all, run]);
+      return run;
+    });
     const summary = uploadSummary(results.map((run) => ({ filename: run.filename, ok: !run.local, message: run.message })));
     if (summary) toast(summary);
   }
@@ -359,7 +340,7 @@ export function ReportProvider({ children }: { children: ReactNode }) {
   // the signed-in person's input on a job (a decision, an answer): the server answers with the job as it is now
   async function post(id: string, action: "decision" | "answer", body: object) {
     const init = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
-    const job = (await request(`/jobs/${id}/${action}`, init).then((response) => response.json())) as Job;
+    const job = await request(`/jobs/${id}/${action}`, init).then(json<Job>);
     setRuns((all) => all.map((run) => (run.id === id ? toRun(job, run) : run))); // an answered run is queued again: active, so polling starts
   }
 
@@ -369,7 +350,19 @@ export function ReportProvider({ children }: { children: ReactNode }) {
 
   return (
     <ReportContext
-      value={{ runs, running, loaded, offline, retry: async () => void (await refresh()), upload, retryUpload, dismissRun, decide, answer }}
+      value={{
+        runs,
+        running,
+        loaded,
+        offline,
+        signedOut,
+        retry: async () => void (await refresh()),
+        upload,
+        retryUpload,
+        dismissRun,
+        decide,
+        answer,
+      }}
     >
       {children}
     </ReportContext>

@@ -114,6 +114,11 @@ class Jobs:
         self._execute("INSERT INTO runs (id, filename, status, owner) VALUES (%s, %s, 'queued', %s)", (job_id, filename, owner))
         return job_id
 
+    def active_count(self, owner: str) -> int:
+        """How many of a person's jobs are queued or running (a job waiting for an answer holds no worker)."""
+        sql = "SELECT count(*) AS n FROM runs WHERE owner = %s AND status IN ('queued', 'running')"
+        return self._execute(sql, (owner,))[0]["n"]
+
     def _with_pdf(self, row: dict) -> dict:
         job = _job(row)
         job["has_pdf"] = self.pdf_path(job["id"]).exists()  # jobs from before the PDFs were kept have none
