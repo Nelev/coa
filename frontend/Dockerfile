@@ -22,4 +22,6 @@ COPY --from=build /app/public ./public
 COPY --from=build /app/next.config.mjs ./
 
 EXPOSE 3000
-CMD ["node_modules/.bin/next", "start", "--hostname", "0.0.0.0"]
+# no --hostname: with it Next takes 0.0.0.0 as the address of the server and AuthKit sends people to http://0.0.0.0:3000 once signed in; without it
+# the server still listens on every interface, so the published port works, and its own address is localhost
+CMD ["node_modules/.bin/next", "start"]
