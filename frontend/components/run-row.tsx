@@ -59,7 +59,7 @@ function Outcome({ run, onRetry, onDismiss }: { run: Run; onRetry?: (id: string)
   );
 }
 
-const CELL = "border-b px-4 py-3 align-middle group-last/row:border-b-0 group-data-[compact]/row:pointer-fine:py-1.5";
+const CELL = "border-b px-4 py-3 align-middle group-last/row:border-b-0";
 
 // One run, a row of the table. The file name is the link, and its ::after covers the whole row, so the row is one big target for the
 // pointer while a screen reader meets one link (not four) and the keyboard stops once per row. On a narrow screen (`wide` is false) the
@@ -67,14 +67,12 @@ const CELL = "border-b px-4 py-3 align-middle group-last/row:border-b-0 group-da
 export function RunRow({
   run,
   now,
-  compact = false,
   wide = true,
   onRetry,
   onDismiss,
 }: {
   run: Run;
   now: number;
-  compact?: boolean;
   wide?: boolean;
   onRetry?: (id: string) => void;
   onDismiss?: (id: string) => void;
@@ -88,10 +86,7 @@ export function RunRow({
   const filename = "block truncate text-sm font-medium";
   const outcome = <Outcome run={run} onRetry={onRetry} onDismiss={onDismiss} />;
   return (
-    <tr
-      data-compact={compact || undefined}
-      className={cn("group/row relative transition-colors", !run.local && "hover:bg-muted/60 has-[a:focus-visible]:bg-muted/60")}
-    >
+    <tr className={cn("group/row relative transition-colors", !run.local && "hover:bg-muted/60 has-[a:focus-visible]:bg-muted/60")}>
       <td className={CELL}>
         <StatusChip run={run} />
       </td>
@@ -101,7 +96,6 @@ export function RunRow({
         ) : (
           <Link
             href={`/runs/${run.id}`}
-            data-row
             onPointerEnter={preloadReport}
             onFocus={preloadReport}
             className={cn(
