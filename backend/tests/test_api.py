@@ -1,19 +1,18 @@
 import io
-import sqlite3
+import os
 import threading
 import time
-from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
-from langgraph.checkpoint.sqlite import SqliteSaver
 
 import erp
 import main
 from agent.agent import DOCS_DIR
-from jobs import Jobs
+from jobs import SUMMARY, Jobs, open_checkpointer
 from react_agent.react_agent import graph
 from schema import schema
 from schema.schema import CoAData, CoAHeader, DocumentCheck
@@ -64,8 +63,8 @@ class FakeAgent:
 
 
 @pytest.fixture
-def start_app(tmp_path, monkeypatch, signed_in):
-    """Starts the app (its lifespan) with the jobs in tmp_path; the app is stopped after the test."""
+def start_app(tmp_path, monkeypatch, signed_in, database):
+    """Starts the app (its lifespan) with the uploads in tmp_path and the jobs in the test's database; the app is stopped after the test."""
     monkeypatch.setenv("JOBS_DIR", str(tmp_path))
     clients = []
 
@@ -311,7 +310,7 @@ def interrupted_job(directory, **compile_options):
     store = Jobs(directory)
     job_id = store.create("coa.pdf", io.BytesIO(CITRIC_ACID_PDF))
     store.start(job_id)
-    with SqliteSaver.from_conn_string(str(directory / "checkpoints.db")) as checkpointer:
+    with open_checkpointer(store.dsn) as checkpointer:
         first_run = graph.compile(checkpointer=checkpointer, **compile_options)
         first_run.invoke({"document_path": str(store.pdf_path(job_id))}, {"configurable": {"thread_id": job_id}})
     return job_id
@@ -362,20 +361,73 @@ def test_the_frontend_origin_is_allowed_by_cors(path, method):
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
 
 
-def legacy_jobs_db(directory, extra_columns=""):
-    """A jobs.db from before the columns in jobs.ADDED_COLUMNS (or some of them, in `extra_columns`), with one finished job, 'old'."""
-    with closing(sqlite3.connect(directory / "jobs.db")) as db, db:
-        columns = "id TEXT PRIMARY KEY, filename TEXT NOT NULL, status TEXT NOT NULL, statuses TEXT NOT NULL DEFAULT '[]'"
-        db.execute(f"CREATE TABLE jobs ({columns}, ui_spec TEXT, error TEXT, started_at INTEGER{extra_columns})")
-        db.execute("INSERT INTO jobs (id, filename, status) VALUES ('old', 'old.pdf', 'done')")
+def connect():
+    """A connection to the test's database."""
+    return psycopg.connect(os.environ["DATABASE_URL"])
 
 
-def test_a_database_from_before_the_result_columns_is_upgraded(tmp_path):
-    legacy_jobs_db(tmp_path)
+def tables_in(schema):
+    with connect() as db:
+        rows = db.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = %s", (schema,)).fetchall()
+    return {name for (name,) in rows}
 
-    job = Jobs(tmp_path).get("old")
 
-    assert job["filename"] == "old.pdf" and job["result"] is None and job["finished_at"] is None
+def test_the_database_has_two_tables_and_the_checkpoints_have_their_own_schema(start_app, database):
+    start_app()
+
+    assert tables_in(database) == {"users", "runs", "alembic_version"}
+    assert {"checkpoints", "checkpoint_writes"} <= tables_in(os.environ["CHECKPOINT_SCHEMA"])
+    with connect() as db:  # pgvector is installed, for the semantic search to come
+        assert db.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'").fetchone()
+
+
+def test_a_database_made_before_the_migrations_is_adopted(tmp_path, database):
+    with connect() as db:  # what the API created with plain CREATE TABLEs
+        db.execute("CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT, name TEXT, created_at BIGINT NOT NULL DEFAULT 0)")
+        db.execute("INSERT INTO users (id) VALUES ('user_old')")
+
+    Jobs(tmp_path)  # applies the migrations: the tables there are left as they are, the missing ones are made
+
+    with connect() as db:
+        assert db.execute("SELECT id FROM users").fetchall() == [("user_old",)]
+        assert db.execute("SELECT version_num FROM alembic_version").fetchall() == [("0001",)]
+    assert tables_in(database) == {"users", "runs", "alembic_version"}
+
+
+def test_starting_again_changes_nothing(tmp_path, database):
+    store = Jobs(tmp_path)
+    store.upsert_user("user_1")
+
+    Jobs(tmp_path)
+
+    with connect() as db:
+        assert db.execute("SELECT id FROM users").fetchall() == [("user_1",)]
+
+
+def test_a_listing_has_every_column_but_the_report_and_the_ordering(tmp_path, database):
+    Jobs(tmp_path)  # SUMMARY is written out by hand: a column a migration adds has to be added to it
+
+    with connect() as db:
+        rows = db.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = %s AND table_name = 'runs'", (database,))
+        columns = {name for (name,) in rows}
+    assert set(SUMMARY.split(", ")) == columns - {"ui_spec", "seq"}
+
+
+def test_a_user_is_recorded_once_and_keeps_what_is_known_of_them(tmp_path, database):
+    store = Jobs(tmp_path)
+
+    store.upsert_user("user_1", "anna@example.com", "Anna")
+    store.upsert_user("user_1")  # a later token without the claims
+
+    with connect() as db:
+        assert db.execute("SELECT id, email, name FROM users").fetchall() == [("user_1", "anna@example.com", "Anna")]
+
+
+def test_a_job_needs_its_owner_to_be_a_user(tmp_path, database):
+    store = Jobs(tmp_path)
+
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        store.create("coa.pdf", io.BytesIO(b"%PDF"), owner="nobody")
 
 
 def decide(client, job_id, decision="approved", by="QA Anna", reason=""):
@@ -460,15 +512,6 @@ def test_only_a_finished_job_can_be_decided(start_app, monkeypatch):
     finally:
         release.set()
     assert decide(client, "nope", "rejected", reason="r").status_code == 404
-
-
-def test_a_database_from_before_the_decision_columns_is_upgraded(tmp_path):
-    legacy_jobs_db(tmp_path, ", result TEXT, finished_at INTEGER")
-
-    store = Jobs(tmp_path)
-
-    assert store.get("old")["decision"] is None and store.get("old")["has_pdf"] is False
-    assert store.decide("old", "approved", "QA Anna", "") is True
 
 
 def test_the_frontend_may_post_json_to_the_decision_endpoint():

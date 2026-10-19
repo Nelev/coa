@@ -23,6 +23,21 @@ jobs:
     name: Backend
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres: # with pgvector: the jobs and the agent's checkpoints live in Postgres
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: coa
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/coa
     steps:
       - uses: actions/checkout@v7
 

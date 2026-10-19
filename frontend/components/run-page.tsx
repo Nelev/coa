@@ -10,7 +10,7 @@ import { AnswerPanel } from "@/components/answer-panel";
 import { DecisionBar } from "@/components/decision-bar";
 import { DecisionPanel } from "@/components/decision-panel";
 import { Problem } from "@/components/problem";
-import { fetchReport, openPdf, type Run, useReport } from "@/components/report-context";
+import { fetchReport, openPdf, preloadReport, type Run, useReport } from "@/components/report-context";
 import { RunSummary, runTitle } from "@/components/run-summary";
 import { SkeletonRegion } from "@/components/skeleton-region";
 import { Steps } from "@/components/steps";
@@ -39,6 +39,7 @@ function useReportSpec(id: string, state: Run["state"] | undefined) {
     if (have || !wanted) return;
     let current = true;
     setFailed(false);
+    preloadReport(); // with the report, not after it: a page opened by its address has not met the renderer yet
     fetchReport(id)
       .then((spec) => current && spec != null && setLoaded({ id, spec }))
       .catch(() => current && done && setFailed(true)); // before the run is done there is no report to miss

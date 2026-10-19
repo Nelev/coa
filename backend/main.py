@@ -9,12 +9,11 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 from pydantic import BaseModel
 
 from auth import require_user
-from jobs import Jobs
+from jobs import Jobs, open_checkpointer
 from react_agent.react_agent import graph
 
 logger = logging.getLogger(__name__)
@@ -93,7 +92,7 @@ async def lifespan(_app: FastAPI):
     store = Jobs(data_dir)
     pending = queue.Queue()
 
-    with SqliteSaver.from_conn_string(str(data_dir / "checkpoints.db")) as checkpointer:
+    with open_checkpointer(store.dsn) as checkpointer:
         agent_app = graph.compile(checkpointer=checkpointer)
 
         # the queue lives in memory, the jobs in the database: after a restart, unfinished jobs are queued again
@@ -126,6 +125,7 @@ router = APIRouter(dependencies=[Depends(require_user)])
 @router.post("/jobs", status_code=202)
 def create_job(file: UploadFile, user: Annotated[dict, Depends(require_user)]):
     """Queue the agent to analyze an uploaded CoA PDF. Poll GET /jobs/{id} for its progress and result."""
+    store.upsert_user(user["sub"], user.get("email"), user.get("name"))  # the run points to its owner
     job_id = store.create(file.filename or "document.pdf", file.file, owner=user["sub"])
     job = store.get(job_id)  # before a worker can take it, so the answer is still "queued"
     pending.put(job_id)
