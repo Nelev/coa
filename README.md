@@ -251,21 +251,47 @@ instead of running open. `/health` needs no token, so `curl` the jobs endpoints 
 Each job records who uploaded it (`owner`, their sign-in id).
 
 When an analysis finds a lot **non-conforming**, the API can mail
-its summary (product, lot, supplier, test counts and a link to the job). Add these to `backend/.env`; without `SMTP_HOST` and
-`NOTIFY_EMAIL` no mail is sent:
+its summary (product, lot, supplier, test counts and a link to the job). Any SMTP provider works; add the settings to
+`backend/.env`. Without `SMTP_HOST` and `NOTIFY_EMAIL` no mail is sent. `.env` is loaded when the API starts, so **restart the
+API after changing it** (`fastapi dev` reloads on code changes, not on `.env`).
+
+#### With Resend
+
+[Resend](https://resend.com) needs no IP allow-list. In its dashboard, create an API key (*API Keys*, sending access):
+
+```
+SMTP_HOST=smtp.resend.com
+SMTP_PORT=587                         # STARTTLS; the code does not speak port 465 (implicit TLS)
+SMTP_USER=resend                      # always the word "resend"
+SMTP_PASSWORD=re_...                  # the API key
+SMTP_FROM=onboarding@resend.dev       # required: the login is not an address (see below for your own sender)
+NOTIFY_EMAIL=you@example.com          # who gets the mails
+APP_URL=http://localhost:3000         # optional: where the frontend is served; the mails then link to the job's page
+```
+
+`onboarding@resend.dev` is Resend's test sender: it only delivers to the address you signed up to Resend with. To send from your
+own address and to anyone, verify a domain (*Domains → Add Domain*, then add the SPF and DKIM records it shows at your DNS
+provider; a subdomain such as `alerts.example.com` keeps its reputation apart from your main mail) and change the sender:
+
+```
+SMTP_FROM=CoA Agent <coa-alerts@alerts.example.com>
+```
+
+#### With Gmail
 
 ```
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587                  # default 587; STARTTLS is used when SMTP_USER is set
 SMTP_USER=you@gmail.com        # the login; also the "From" address unless SMTP_FROM is set
-SMTP_PASSWORD=...              # Gmail: an App Password (needs 2-Step Verification), not your account password
-SMTP_FROM=alerts@example.com   # optional: the sender, for providers whose login is not an address (Resend: SMTP_USER=resend)
-NOTIFY_EMAIL=you@example.com   # who gets the mails
-APP_URL=http://localhost:3000  # optional: where the frontend is served; the mails then link to the job's page
+SMTP_PASSWORD=...              # an App Password (needs 2-Step Verification), not your account password
+NOTIFY_EMAIL=you@example.com
 ```
 
-Leave `SMTP_USER` out to send without encryption or login, e.g. to a local mail catcher on `127.0.0.1:1025`. `.env` is loaded
-when the API starts, so restart it after changing it.
+#### Other providers
+
+Set `SMTP_HOST`, `SMTP_USER` and `SMTP_PASSWORD` to what the provider gives you for SMTP, and `SMTP_FROM` to a sender it has
+verified whenever the login is not itself an address (Brevo's is not, for example). Leave `SMTP_USER` out to send without
+encryption or login, e.g. to a local mail catcher on `127.0.0.1:1025`.
 
 A mail that cannot be sent never fails the job: it stays done, the worker keeps running, and the API logs one warning:
 
@@ -274,8 +300,12 @@ WARNING agent.agent: the non-conforming mail was not sent: SMTPAuthenticationErr
 ```
 
 That example is Brevo refusing a login from an IP that is not on its allow-list (*Security → Authorized IPs*); a server needs
-its own address added there. To check the settings without sending anything, connect, `starttls()` and `login()` with
-`smtplib` using the values from `.env`.
+its own address added there. With Resend, the usual causes are a wrong API key (the login fails), a sender on a domain that is
+not verified, or, from `onboarding@resend.dev`, a recipient other than your own address (the send is refused). To check the
+settings without running the agent, connect, `starttls()`, `login()` and send one message with `smtplib` using the values from
+`.env`.
+
+If the mail comes from the wrong provider, the API is still running with the settings it had when it started: restart it.
 
 Every setting, for reference (the backend reads the environment and `backend/.env`; the frontend reads `frontend/.env.local`):
 
