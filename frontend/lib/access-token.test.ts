@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const getAccessTokenAction = vi.fn<() => Promise<string>>();
 vi.mock("@/app/auth/actions", () => ({ getAccessTokenAction }));
@@ -61,5 +61,51 @@ describe("accessToken", () => {
     getAccessTokenAction.mockRejectedValueOnce(new Error("signed out")).mockResolvedValueOnce(tokenExpiringIn(300));
     await expect(accessToken()).rejects.toThrow("signed out");
     await expect(accessToken()).resolves.toContain("signature");
+  });
+});
+
+describe("seedAccessToken", () => {
+  // the module keeps what it was seeded with, so each test has its own copy of it
+  async function fresh() {
+    vi.resetModules();
+    vi.stubGlobal("window", {});
+    return import("@/lib/access-token");
+  }
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("is the token of the first request, without asking the server", async () => {
+    const { seedAccessToken, accessToken } = await fresh();
+    const token = tokenExpiringIn(300);
+    seedAccessToken(token);
+    expect(await accessToken()).toBe(token);
+    expect(getAccessTokenAction).not.toHaveBeenCalled();
+  });
+
+  it("is asked of the server when the seeded token is about to expire", async () => {
+    const { seedAccessToken, accessToken } = await fresh();
+    getAccessTokenAction.mockResolvedValue(tokenExpiringIn(300, "new"));
+    seedAccessToken(tokenExpiringIn(10, "old"));
+    await accessToken();
+    expect(getAccessTokenAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not come back after the API refused it", async () => {
+    const { seedAccessToken, accessToken, forgetAccessToken } = await fresh();
+    const stale = tokenExpiringIn(300, "stale");
+    const next = tokenExpiringIn(300, "next");
+    getAccessTokenAction.mockResolvedValue(next);
+    seedAccessToken(stale);
+    forgetAccessToken();
+    seedAccessToken(stale); // the provider renders again with the page's old token
+    expect(await accessToken()).toBe(next);
+  });
+
+  it("is not kept on the server, where the module is shared by every request", async () => {
+    vi.resetModules();
+    const { seedAccessToken, accessToken } = await import("@/lib/access-token");
+    getAccessTokenAction.mockResolvedValue(tokenExpiringIn(300, "asked"));
+    seedAccessToken(tokenExpiringIn(300, "seeded")); // no window here
+    await accessToken();
+    expect(getAccessTokenAction).toHaveBeenCalledTimes(1);
   });
 });

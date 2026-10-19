@@ -3,6 +3,7 @@ const MARGIN_MS = 30_000;
 
 let cached: { token: string; expiresAt: number } | undefined;
 let pending: Promise<string> | undefined;
+let seeded = false;
 
 // when the token expires, as a Date.now() value; 0 if it cannot be read (it is then never reused)
 export function tokenExpiry(token: string): number {
@@ -12,6 +13,15 @@ export function tokenExpiry(token: string): number {
   } catch {
     return 0;
   }
+}
+
+// The token the page was rendered with (the layout has it already): the first request uses it instead of asking the server for another.
+// It counts once, when the page loads: later renders bring the same old token, which must not replace a new one asked for after the API
+// refused it. Only the browser keeps it: on the server this module is shared by every person's requests.
+export function seedAccessToken(token: string) {
+  if (typeof window === "undefined" || seeded) return;
+  seeded = true;
+  cached ??= { token, expiresAt: tokenExpiry(token) };
 }
 
 // The session's access token for the API. The page polls every second, so it is kept until shortly before it expires, and

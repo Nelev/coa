@@ -38,3 +38,17 @@ export function skippedToast(skipped: number): ToastInput | null {
     description: "Only PDF documents can be analyzed.",
   };
 }
+
+// `fn` on each item, never more than `limit` at a time; the results are in the order of the items
+export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const work = async () => {
+    while (next < items.length) {
+      const at = next++;
+      results[at] = await fn(items[at]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, work));
+  return results;
+}
