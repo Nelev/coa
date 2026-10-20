@@ -1,9 +1,57 @@
 # CoA agent
 
-An agent that reads a **Certificate of Analysis (CoA)** sent by a supplier to a plant, extracts its data,
-and checks the reported results against the **plant's own specification** for that material.
+When a plant receives a raw material, the supplier sends a **Certificate of Analysis (CoA)**: a PDF with the lot's test results (assay,
+water, heavy metals, appearance, ...) and the limits the supplier tested against. Someone in quality then has to check every
+result against the **plant's own specification** for that material, which is often stricter than the supplier's, before the lot can
+be released to production.
+
+This app does that check. You upload the CoA PDFs; an agent reads each one, extracts the data, compares every result with the plant's
+requirements and writes a report: **Conforming**, **Needs review** or **Non-conforming**, with the reason for each non-passing test.
+When the agent cannot tell (a result in another unit, say), it stops and asks you, and it remembers your answer for the next time. The
+**release decision is always a person's**: the agent prepares the report, and QA approves, holds or rejects the lot.
+
+The stack is a [LangGraph](https://langchain-ai.github.io/langgraph/) agent (a ReAct agent calling the steps as tools; a fixed graph with
+the same steps is kept for comparison) behind a FastAPI job queue, Postgres with pgvector for jobs, checkpoints and memory, and a Next.js
+dashboard whose report page is **designed by the model** as a [json-render](https://github.com/vercel-labs/json-render) spec. Sign-in
+is WorkOS AuthKit.
 
 The plant limits in `backend/docs/erp_demo.json` are **placeholder values**, not real plant data.
+
+## The workflow
+
+1. **Upload.** Click **Upload documents** (or drop PDFs anywhere on the page). Each file becomes a run in the overview, sorted by priority: a
+   run waiting for your answer first, then the ones in progress or failed, non-conforming lots, lots that need review and conforming
+   ones, with the lots a person has already decided last. Filter by status, or search by file, product, lot or supplier.
+
+   ![The runs overview, with a run that has a question for you at the top](docs/images/workflow-1-overview.jpg)
+
+2. **The agent works.** A run takes a minute or two (it makes several model calls). The row shows the current step and a progress bar,
+   and a worker takes the next file while others wait in the queue.
+
+   ![A run being analyzed in the overview](docs/images/workflow-2-analyzing.jpg)
+
+3. **Follow it, step by step.** Open the run and the **Activity** tab lists the steps as the agent finishes them: reading the PDF, checking
+   it is a CoA, extracting the data, finding the plant specification, comparing the results. Which steps run is the model's choice, so a
+   document that is not a CoA skips straight to the report.
+
+   ![The Activity tab of a run: the steps the agent has finished and the one it is on](docs/images/workflow-3-activity.jpg)
+
+4. **Answer what it is unsure about.** When the comparison flags a check as unsure (here the CoA reports water in `g/100 g` and lead in `ppb`,
+   and the plant limits are in `%` and `ppm`), the agent **stops** and asks you, with its reason and the figures. The worker is freed
+   while it waits. Answers given to similar checks before are offered under **Answered before**, to reuse or ignore. Once you answer, the
+   agent judges those tests again with your answer in hand and continues; a test you leave blank keeps its verdict. You choose whether
+   an answer is kept for the product's future lots, for every product, or for this lot only.
+
+   ![A run that stopped to ask for review of two unit mismatches](docs/images/workflow-4-needs-answer.jpg)
+
+5. **Read the report** (below): the outcome and a bar of the results, the certificate's details, one alert per finding and a table with
+   a verdict for every plant test. **Open the CoA** opens the uploaded PDF, which is kept as the record the decision is about.
+
+6. **Decide.** The bar at the bottom of the run page asks for the decision. Approving a lot the agent did not find conforming, holding
+   and rejecting all need a reason, and rejecting and approving are final. The decision, who took it and why are stored with the run.
+   A non-conforming lot is also mailed to the quality team, when SMTP is set up.
+
+   ![The decision panel for a non-conforming lot: approve anyway, put on hold or reject, each with a reason](docs/images/workflow-5-decision.jpg)
 
 ## How the agent works
 
@@ -155,17 +203,19 @@ upload starts, so the idle page does not download it.
 
 ### What it looks like
 
-The run page for `backend/docs/sample_coa_defective.pdf`. Above the tabs, the lot, the verdict and a bar of the test results are
-part of the page; the **Report** tab below is the json-render spec: the certificate title, an outcome Alert and the certificate
-details. The release decision always stays with QA (the **Decide** bar at the bottom).
+The report of `backend/docs/sample_coa_defective.pdf`, a CoA with five seeded defects (see the table under *Running it*). Above the tabs,
+the lot, the verdict and a bar of the test results are part of the page; the **Report** tab below is the json-render spec: the
+certificate title, an outcome Alert and the certificate details. The release decision always stays with QA (the **Decide** bar at the
+bottom).
 
 ![Run page: verdict, test result bar and the start of the report](docs/images/report-summary.jpg)
 
-The findings (critical in red, warnings in yellow), one Alert per non-passing check.
+The findings, one Alert per non-passing check, critical ones (red) before warnings (yellow). Each has the CoA's result and the plant's
+requirement.
 
 ![Report findings](docs/images/report-findings.jpg)
 
-The results table with one verdict per plant test.
+The results table, with one verdict per plant test.
 
 ![Report results table](docs/images/report-results.jpg)
 
