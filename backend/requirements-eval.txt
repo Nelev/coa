@@ -1,0 +1,4 @@
+-r requirements-dev.txt
+ragas==0.4.3  # evals/__init__.py works around this version
+pandas
+openpyxl
