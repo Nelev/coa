@@ -7,3 +7,6 @@ __pycache__/
 !.env.example
 *.tsbuildinfo
 backend/data/
+
+# the rows of the evaluation runs (backend/evals)
+backend/evals/results/

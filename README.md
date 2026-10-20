@@ -188,6 +188,7 @@ backend/
     sample_coa_defective.pdf      CoA with five seeded defects
     erp_demo.json                 materials with their plant requirements
   scripts/eval_compare.py         end-to-end check against the real model (runs the fixed graph)
+  evals/                          the evaluation of the ReAct agent against the real model: scenarios, metrics, the runner that writes an Excel file
   tests/                          unit tests (mocked model, a real Postgres): API and queue, upload limits, database, sign-in, memory, comparison, validation, mail
   main.py                         FastAPI app: /health, the /jobs endpoints (create, list, get, pdf, answer, decision), plus the job queue and its workers
   auth.py                         checks the WorkOS access token on every /jobs request
@@ -520,6 +521,24 @@ restart behaviour, the upload limits, decisions, answers, the database (its tabl
 tests for the components and helpers.
 The eval script is slower (several model calls) and needs `OPENROUTER_API_KEY`. It exits non-zero if any
 verdict differs from the expected one. It covers the one-page conforming sample and the defective one, not the three-page sample.
+
+### Evaluating the ReAct agent (`backend/evals/`)
+
+`scripts/eval_compare.py` checks the fixed graph; the ReAct agent, which the API runs, is evaluated with [Ragas](https://docs.ragas.io),
+following its [agent tutorial](https://docs.ragas.io/en/stable/tutorials/agent/): custom `@numeric_metric`s (`evals/metrics.py`) and an
+`@experiment()` that runs the agent on each of the nine scenarios (`evals/scenarios.py`, with the extra PDFs in `evals/docs/`) and scores
+it (`evals/run.py`). The scores are `outcome_correct`, `verdict_accuracy`, `mail_correct` and `tools_correct` (the expected tools, in
+exactly that order).
+
+```bash
+cd backend
+uv pip install --python .venv/bin/python -r requirements-eval.txt --overrides requirements-eval-overrides.txt   # once
+.venv/bin/python -m evals.run
+```
+
+It calls the real model through OpenRouter (`OPENROUTER_API_KEY`, about two cents a run); the mail, the memory of earlier answers, the
+LangSmith traces and ragas' usage statistics are switched off. Ragas saves the rows in `evals/results/experiments/<time>.csv`, and the
+scores are also in `evals/results/<time>.xlsx`. Set `REPEATS` in `run.py` to run each scenario more than once: the model's answers vary.
 
 ## Continuous integration
 

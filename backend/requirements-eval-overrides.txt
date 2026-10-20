@@ -1,0 +1,2 @@
+# ragas needs scikit-network only to generate test sets, and it has no Python 3.14 wheel (it would need a C++ compiler): drop it
+scikit-network; sys_platform == 'never'
