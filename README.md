@@ -574,11 +574,49 @@ verdict differs from the expected one. It covers the one-page conforming sample 
 
 ### Evaluating the ReAct agent (`backend/evals/`)
 
-`scripts/eval_compare.py` checks the fixed graph; the ReAct agent, which the API runs, is evaluated with [Ragas](https://docs.ragas.io),
-following its [agent tutorial](https://docs.ragas.io/en/stable/tutorials/agent/): custom `@numeric_metric`s (`evals/metrics.py`) and an
-`@experiment()` that runs the agent on each of the nine scenarios (`evals/scenarios.py`, with the extra PDFs in `evals/docs/`) and scores
-it (`evals/run.py`). The scores are `outcome_correct`, `verdict_accuracy`, `mail_correct` and `tools_correct` (the expected tools, in
-exactly that order).
+The unit tests mock the model, so they say nothing about whether the agent, with the real model, picks the right tools and reaches the right
+verdicts. That is what the evaluation checks. `scripts/eval_compare.py` does it for the fixed graph (two PDFs, the verdicts diffed by hand);
+the ReAct agent, which the API runs, is evaluated with [Ragas](https://docs.ragas.io), following its
+[agent tutorial](https://docs.ragas.io/en/stable/tutorials/agent/).
+
+**What Ragas is here.** Ragas is a Python library for evaluating LLM applications: you give it a dataset of rows, an `@experiment()` function that
+runs your application on one row, and metrics that score what came back, and it runs every row (in parallel), keeps the results and gives them
+back as a table. It also ships LLM-judged metrics (faithfulness, answer relevance, ...); **this evaluation uses none**. The agent's work has
+a known right answer (the outcome, the verdicts, the tools), so the four metrics are plain Python functions wrapped with Ragas'
+`@numeric_metric`, which gives each score a `value` and a `reason`. The scores are exact and free, and a wrong one never comes from a
+second model's opinion.
+
+| File | What it holds |
+|---|---|
+| `evals/scenarios.py` | The dataset: nine scenarios, each a PDF and what a correct run ends with |
+| `evals/metrics.py` | The four metrics |
+| `evals/run.py` | The `@experiment()`: runs the agent on each scenario, scores it, writes the results |
+| `evals/docs/` | The extra PDFs the scenarios need (the samples in `backend/docs/` are reused) |
+
+**The scenarios.** Each one has an expected `outcome`, the expected `verdicts` per plant test (a test not listed should pass; `None` when nothing
+should be compared), the `tools` in the order they should be called, whether the quality team is mailed (`mails`) and, when the run
+should pause on a check it is unsure of, the `answers` a person would give.
+
+| Scenario | The document | A correct run |
+|---|---|---|
+| `conforming`, `conforming_3_pages` | the clean samples (one and three pages) | Conforming |
+| `at_the_limits` | every result is exactly the plant's limit | Conforming (limits are inclusive) |
+| `defective` | five seeded defects, among them a result the supplier's own status hides (water 0.45 against the plant's 0.4) and a missing row | Non-conforming, mailed; the appearance is answered, the lead result left unanswered stays `review` |
+| `unclear_units` | water in `g/100 g` and lead in `ppb`, the plant uses `%` and `ppm` | pauses, a person settles both, then Conforming |
+| `unknown_product`, `no_product_code` | no plant specification for the product | Non-conforming, nothing compared, mailed |
+| `invoice`, `scanned` | not a CoA, and a PDF with no text layer | Not a CoA, straight to the report |
+
+**The metrics.** Each returns 0 or 1, except `verdict_accuracy`, which is a share:
+
+| Metric | 1 when |
+|---|---|
+| `outcome_correct` | the run ended with the expected outcome |
+| `verdict_accuracy` | the share of the plant's tests with the expected verdict (1 when nothing should be compared and nothing was) |
+| `mail_correct` | the quality team was mailed exactly when expected: for a Non-conforming lot only |
+| `tools_correct` | the agent called exactly the expected tools, in that order (a call a tool refused counts) |
+
+**Running it.** It calls the real model through OpenRouter (`OPENROUTER_API_KEY`), which costs about two cents for the clean scenarios and
+a little over ten for `defective`, so nine scenarios cost about 23 cents:
 
 ```bash
 cd backend
@@ -586,9 +624,22 @@ uv pip install --python .venv/bin/python -r requirements-eval.txt --overrides re
 .venv/bin/python -m evals.run
 ```
 
-It calls the real model through OpenRouter (`OPENROUTER_API_KEY`, about two cents a run); the mail, the memory of earlier answers, the
-LangSmith traces and ragas' usage statistics are switched off. Ragas saves the rows in `evals/results/experiments/<time>.csv`, and the
-scores are also in `evals/results/<time>.xlsx`. Set `REPEATS` in `run.py` to run each scenario more than once: the model's answers vary.
+Each scenario is run as the API would run it: with its own in-memory checkpointer, the same recursion limit, and, when the agent pauses,
+a resume with the scenario's `answers`. The run is isolated from the rest of the setup: the mail is stubbed (`notify.send_mail` returns
+true, which the tool reports as "sent" and the mail metric reads), the memory of earlier answers finds and keeps nothing, and the
+LangSmith traces and Ragas' usage statistics are off. A run that fails counts as a result (its `error` is recorded) and does not stop the
+others.
+
+**The results.** Ragas saves every row in `evals/results/experiments/<time>.csv`. `evals/results/<time>.xlsx` (both gitignored) has a
+**Summary** sheet with the mean of each score per scenario and a **Runs** sheet with every row: the outcome, the tools called, the reason
+of the verdict score, the cost and the error. Set `REPEATS` in `run.py` to run each scenario more than once: the model's answers vary,
+so one run is an anecdote, and a mean over several shows how stable a scenario is.
+
+One run (the same nine scenarios, `gpt-5-mini`) scored 1 for the outcome, the verdicts and the mail on all nine. `tools_correct` was 0 on
+four of them: on the conforming lots (`conforming`, `conforming_3_pages`, `at_the_limits`, `unclear_units`) the model also called
+`notify_quality_team`, which the system prompt says is only for a non-conforming lot. The tool refuses to mail anything else, so no mail
+was sent and `mail_correct` stayed 1; `tools_correct` is the metric that shows the model ignoring its prompt, and it is why the
+mail is a guarded tool and not a rule in the prompt.
 
 ## Continuous integration
 
