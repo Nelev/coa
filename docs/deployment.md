@@ -49,7 +49,7 @@ How a request flows:
 | `WORKOS_CLIENT_ID` | yes | The WorkOS client id (`client_...`). The **same value** as on Vercel. Without it the API answers 503. |
 | `CORS_ORIGINS` | yes | `https://coa-pink-seven.vercel.app` exactly: no trailing slash, no quotes, no wildcard. Comma-separated for more than one. |
 | `PORT` | yes | `8000` (the Dockerfile starts uvicorn on 8000; Render defaults to 10000). |
-| `MAX_CONCURRENT_RUNS` | no | Worker threads, default 2. |
+| `MAX_CONCURRENT_RUNS` | no | Worker threads, default 3. |
 | `MAX_UPLOAD_MB` | no | Largest upload, default 20. |
 | `MAX_ACTIVE_JOBS_PER_USER` | no | Queued or running jobs per person, default 20. |
 | `RATE_LIMIT` | no | Requests one address may make to the jobs routes (not `/health`), default `60/minute`; more are refused with 429. The counts are kept in memory, per process. The page polls once a second while a run is active, which is about 60 requests a minute from one tab: consider `600/minute` here (see Troubleshooting). |

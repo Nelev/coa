@@ -424,7 +424,7 @@ Every setting, for reference (the backend reads the environment and `backend/.en
 |---|---|---|
 | `OPENROUTER_API_KEY` | backend | required: the model is reached through OpenRouter |
 | `WORKOS_CLIENT_ID` | backend, frontend | required: the same value in both; without it the API answers 503 |
-| `MAX_CONCURRENT_RUNS` | backend | worker threads, default 2 |
+| `MAX_CONCURRENT_RUNS` | backend | worker threads, default 3 |
 | `MAX_UPLOAD_MB` | backend | largest upload accepted, default 20; the request needs a `Content-Length` |
 | `MAX_ACTIVE_JOBS_PER_USER` | backend | queued or running jobs one person may have, default 20; more are refused with 429 |
 | `RATE_LIMIT` | backend | requests one address may make to the jobs routes (not `/health`), default `60/minute`; more are refused with 429. The counts are kept in memory, per process |
@@ -515,7 +515,7 @@ A job looks like this:
 
 How the queue works:
 
-- `MAX_CONCURRENT_RUNS` (default 2) worker threads take job ids from an in-memory queue. The jobs themselves are rows in
+- `MAX_CONCURRENT_RUNS` (default 3) worker threads take job ids from an in-memory queue. The jobs themselves are rows in
   the Postgres `runs` table, and the uploaded PDFs are kept in `backend/data/uploads/` (set `JOBS_DIR` to move them): the certificate is the record a decision is about.
 - The agent is compiled with a Postgres checkpointer (the `langgraph` schema) and run with the job id as its
   `thread_id`, so its state is saved after every step.
