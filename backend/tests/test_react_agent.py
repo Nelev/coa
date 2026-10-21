@@ -453,3 +453,49 @@ def test_nothing_is_looked_up_when_no_check_is_flagged(fake_llm, monkeypatch):
 )
 def test_a_topic_the_model_makes_up_is_other(topic, known):
     assert schema.ClarificationNote(test="Lead", summary="Rule.", topic=topic).topic == known
+
+
+# a layout the page cannot draw: the `children` of "table" ended up beside the elements, as a key of "elements"
+MISNESTED = json.dumps(
+    {
+        "root": "a",
+        "elements": {"a": {"type": "Stack", "props": {}, "children": ["table"]}, "table": {"type": "Table", "props": {}}, "children": []},
+    }
+)
+
+
+def test_a_layout_the_page_cannot_draw_is_asked_for_again(fake_llm, monkeypatch, mails):
+    monkeypatch.setattr(erp, "get_material", lambda code: MATERIAL)
+    sequence = check_sequence("pass")[:-1]  # up to render_ui's call
+    llm = fake_llm(*sequence, MISNESTED, SPEC, DONE)
+    out = run()
+    assert out["ui_spec"]["root"] == "a" and out["ui_spec"]["elements"]["a"]["type"] == "Alert"  # the second reply
+    retry = llm.prompts[-2]  # the prompt of the call after the rejected one (the last is the agent's)
+    assert 'the element "table" has no "children" list' in retry
+
+
+def test_a_report_that_is_never_a_layout_the_page_can_draw_becomes_an_error_alert(fake_llm, monkeypatch, mails):
+    monkeypatch.setattr(erp, "get_material", lambda code: MATERIAL)
+    fake_llm(*check_sequence("pass")[:-1], MISNESTED, MISNESTED, MISNESTED, DONE)
+    out = run()
+    assert out["ui_spec"] == agent_tools.FALLBACK_UI_SPEC
+
+
+@pytest.mark.parametrize(
+    "spec, problem",
+    [
+        ([], "elements"),
+        ({"root": "a", "elements": "no"}, "elements"),
+        ({"root": "b", "elements": {"a": {"type": "Text", "props": {}, "children": []}}}, "root"),
+        ({"root": "a", "elements": {"a": {"type": "Video", "props": {}, "children": []}}}, "Video"),
+        ({"root": "a", "elements": {"a": {"type": "Text", "children": []}}}, "props"),
+        ({"root": "a", "elements": {"a": {"type": "Text", "props": {}}}}, "children"),
+        ({"root": "a", "elements": {"a": {"type": "Text", "props": {}, "children": []}, "children": []}}, '"children" in "elements"'),
+    ],
+)
+def test_spec_problem_names_what_the_page_would_refuse(spec, problem):
+    assert problem in agent_tools._spec_problem(spec)
+
+
+def test_spec_problem_accepts_a_layout_the_page_can_draw():
+    assert agent_tools._spec_problem(json.loads(SPEC)) is None

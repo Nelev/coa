@@ -44,6 +44,8 @@ from .const import (
     NO_USAGE,
     NON_CONFORMING,
     NOT_A_COA,
+    RENDER_ATTEMPTS,
+    REPORT_COMPONENTS,
     REPORTED,
     VALIDATION_CHARS,
     VERDICT_ISSUE,
@@ -446,6 +448,31 @@ def write_summary(state: State, tool_call_id: CallId) -> Command:
     return _reply({"result": result}, tool_call_id, "write_summary", content)
 
 
+def _spec_problem(spec) -> str | None:
+    """Why `spec` is not a layout the page can draw, or None. The page checks the same structure (frontend/components/report-renderer.tsx):
+    an `elements` map of elements that each have a known `type`, a `props` object and a `children` list, and a `root` that is one of them.
+
+    A model that closes an element too early leaves its `children` outside it, as a key of `elements`: the page refuses the whole report.
+    """
+    if not isinstance(spec, dict) or not isinstance(spec.get("elements"), dict):
+        return 'it is not an object with an "elements" map'
+    elements = spec["elements"]
+    if spec.get("root") not in elements:
+        return 'its "root" is not one of the keys of "elements"'
+    for key, element in elements.items():
+        if not isinstance(element, dict):
+            return f'"{key}" in "elements" is not an element {{"type", "props", "children"}} (close each element only after its "children")'
+        if element.get("type") not in REPORT_COMPONENTS:
+            return f'the element "{key}" has the type {element.get("type")!r}, which is not one of: {", ".join(REPORT_COMPONENTS)}'
+        if not isinstance(element.get("props"), dict):
+            return f'the element "{key}" has no "props" object'
+        if not isinstance(element.get("children"), list):
+            return (
+                f'the element "{key}" has no "children" list (use [] when it has none); keep "children" inside the element, not beside it'
+            )
+    return None
+
+
 @tool
 def render_ui(state: State, tool_call_id: CallId) -> Command:
     """Build the report page from the findings. This is the last step; call write_summary first, unless the document is not a CoA."""
@@ -460,18 +487,21 @@ def render_ui(state: State, tool_call_id: CallId) -> Command:
     feedback = ""
     usage = NO_USAGE
     spec = FALLBACK_UI_SPEC
-    for _ in range(2):  # one retry, telling the model what was wrong
+    for _ in range(RENDER_ATTEMPTS):  # a retry tells the model what was wrong
         reply = get_llm().invoke(prompt + feedback)
         usage = _sum_usage(usage, call_usage(reply))
         try:
             parsed = parse_json_markdown(reply.content)
         except ValueError as error:
+            logger.warning("the report layout is not valid JSON: %s", error)
             feedback = f"\n\nYour previous reply was not valid JSON ({error}). Reply with only the JSON object."
             continue
-        if isinstance(parsed, dict) and isinstance(parsed.get("elements"), dict) and parsed.get("root") in parsed["elements"]:
-            spec = parsed
-            break
-        feedback = '\n\nYour previous reply was not a spec with a "root" key that exists in "elements". Reply with only the JSON object.'
+        if problem := _spec_problem(parsed):
+            logger.warning("the report layout was rejected: %s", problem)
+            feedback = f"\n\nYour previous reply cannot be drawn: {problem}. Reply with only the corrected JSON object."
+            continue
+        spec = parsed
+        break
     content = f"The report is built. Outcome: {state['result']['outcome']}."
     return _reply({**usage, "ui_spec": spec}, tool_call_id, "render_ui", content)
 

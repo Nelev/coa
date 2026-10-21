@@ -25,6 +25,23 @@ REPORTED = ("test", "reason", "answer", "by", "summary", "topic")
 
 NO_USAGE = {"cost": 0.0, "input_tokens": 0, "output_tokens": 0}  # also the keys of a usage dict
 
+# the components a report may use, as report-renderer.tsx and RENDER_UI_PROMPT list them: render_ui rejects any other type
+REPORT_COMPONENTS = (
+    "Stack",
+    "Grid",
+    "Card",
+    "Separator",
+    "Collapsible",
+    "Accordion",
+    "Heading",
+    "Text",
+    "Badge",
+    "Alert",
+    "Progress",
+    "Table",
+)
+RENDER_ATTEMPTS = 3  # the model's first layout and two retries: a layout the page cannot draw is a slip of the model, not a pattern
+
 # a json-render spec holding a single error Alert, for a report the model could not lay out
 FALLBACK_UI_SPEC = {
     "root": "alert",
