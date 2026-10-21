@@ -4,6 +4,7 @@ import { Search } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { useDeferredValue, useEffect, useState } from "react";
 
+import { ClearRuns } from "@/components/clear-runs";
 import { FILTER_LABELS, FilterBar } from "@/components/filter-bar";
 import { useReport } from "@/components/report-context";
 import { RunsTable } from "@/components/runs-table";
@@ -155,6 +156,7 @@ export function Overview() {
                 {shown.length === runs.length ? `${runs.length} ${runs.length === 1 ? "run" : "runs"}` : `${shown.length} of ${runs.length} runs`}
                 {filter !== "all" && <span className="sr-only"> ({FILTER_LABELS[filter]})</span>}
               </p>
+              <ClearRuns />
             </div>
           </div>
 

@@ -119,6 +119,17 @@ class Jobs:
         sql = "SELECT count(*) AS n FROM runs WHERE owner = %s AND status IN ('queued', 'running')"
         return self._execute(sql, (owner,))[0]["n"]
 
+    def any_active(self) -> bool:
+        """Whether any job is queued or running: a worker or the queue still holds it."""
+        return bool(self._execute("SELECT 1 FROM runs WHERE status IN ('queued', 'running') LIMIT 1"))
+
+    def clear(self) -> list[str]:
+        """Delete every job and its PDF. Returns the ids, which are also the agent's thread ids."""
+        ids = [row["id"] for row in self._execute("DELETE FROM runs RETURNING id")]
+        for job_id in ids:
+            self.pdf_path(job_id).unlink(missing_ok=True)
+        return ids
+
     def _with_pdf(self, row: dict) -> dict:
         job = _job(row)
         job["has_pdf"] = self.pdf_path(job["id"]).exists()  # jobs from before the PDFs were kept have none

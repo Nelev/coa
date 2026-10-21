@@ -47,6 +47,8 @@ class FakeAgent:
         self.statuses, self.spec = statuses, spec
         self.calls = []
         self.finished = set()  # thread ids
+        self.deleted = []  # the thread ids whose checkpoints were deleted
+        self.checkpointer = SimpleNamespace(delete_thread=self.deleted.append)
 
     def get_state(self, config):
         done = config["configurable"]["thread_id"] in self.finished and self.spec is not None
@@ -315,6 +317,42 @@ def test_a_person_can_have_only_so_many_jobs_in_progress(start_app, monkeypatch)
     submit(client)  # the finished jobs no longer count
 
 
+def test_clearing_deletes_every_job_with_its_certificate_and_checkpoints(start_app, monkeypatch):
+    agent = FakeAgent()
+    client = start_app()
+    monkeypatch.setattr(main, "agent_app", agent)
+    ids = [submit(client, name=name)["id"] for name in ("a.pdf", "b.pdf")]
+    for job_id in ids:
+        wait_for_end(client, job_id)
+
+    assert client.delete("/jobs").status_code == 204
+
+    assert client.get("/jobs").json() == []
+    assert client.get(f"/jobs/{ids[0]}/pdf").status_code == 404
+    assert not any(main.store.pdf_path(job_id).exists() for job_id in ids)
+    assert sorted(agent.deleted) == sorted(ids)
+
+
+def test_clearing_is_refused_while_a_job_is_in_progress(start_app, monkeypatch):
+    release = threading.Event()
+
+    class BlockedAgent(FakeAgent):
+        def play(self, inputs):
+            release.wait(10)
+            yield from super().play(inputs)
+
+    client = start_app(max_runs=1)
+    monkeypatch.setattr(main, "agent_app", BlockedAgent())
+    try:
+        job_id = submit(client)["id"]
+        assert client.delete("/jobs").status_code == 409
+        assert len(client.get("/jobs").json()) == 1
+    finally:
+        release.set()
+    wait_for_end(client, job_id)
+    assert client.delete("/jobs").status_code == 204
+
+
 def test_an_address_that_makes_too_many_requests_is_refused_except_for_health(start_app, monkeypatch):
     monkeypatch.setattr(main, "RATE_LIMIT", "3/minute")
     client = start_app()
@@ -414,7 +452,7 @@ def test_health_still_works_without_the_api_key(monkeypatch):
     assert TestClient(main.app).get("/health").json() == {"status": "ok"}
 
 
-@pytest.mark.parametrize(("path", "method"), [("/jobs", "POST"), ("/jobs", "GET"), ("/jobs/abc", "GET")])
+@pytest.mark.parametrize(("path", "method"), [("/jobs", "POST"), ("/jobs", "GET"), ("/jobs", "DELETE"), ("/jobs/abc", "GET")])
 def test_the_frontend_origin_is_allowed_by_cors(path, method):
     response = TestClient(main.app).options(path, headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": method})
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
