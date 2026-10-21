@@ -111,7 +111,7 @@ async def lifespan(_app: FastAPI):
         for job_id in store.requeue_unfinished():
             pending.put(job_id)
         # daemon threads: a shutdown does not wait minutes for a running agent; its job is resumed on the next start
-        workers = [threading.Thread(target=worker, daemon=True) for _ in range(int(os.getenv("MAX_CONCURRENT_RUNS", "2")))]
+        workers = [threading.Thread(target=worker, daemon=True) for _ in range(int(os.getenv("MAX_CONCURRENT_RUNS", "3")))]
         for thread in workers:
             thread.start()
         yield
