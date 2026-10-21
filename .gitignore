@@ -10,3 +10,4 @@ backend/data/
 
 # the rows of the evaluation runs (backend/evals)
 backend/evals/results/
+.neon
