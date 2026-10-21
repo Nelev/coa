@@ -11,7 +11,7 @@ export function runTitle(run: Run): string {
   return [product, lot && `Lot ${lot}`].filter(Boolean).join(" · ") || run.filename;
 }
 
-// The top of a run's page: what it is, what the agent found (the verdict, in words and as a bar), and what a person decided. The report
+// The top of a run's page: what it is, what the agent found (the verdict, in words and in counts), and what a person decided. The report
 // below has the details. `actions` are the buttons at the right (open the certificate, go to the next run).
 export function RunSummary({ run, actions }: { run: Run; actions: ReactNode }) {
   const supplier = run.result?.supplier;

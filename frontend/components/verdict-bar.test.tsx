@@ -12,13 +12,12 @@ describe("verdictSentence", () => {
 });
 
 describe("VerdictBar", () => {
-  it("is one image for a screen reader, with a part for each verdict that occurs", () => {
+  it("counts each verdict, hidden from a screen reader since the sentence says the same", () => {
     const html = renderToStaticMarkup(<VerdictBar counts={{ pass: 9, review: 0, fail: 2 }} />);
-    expect(html).toContain('role="img"');
-    expect(html).toContain('aria-label="9 of 11 tests pass, 2 fail"');
-    expect(html).toContain("flex-grow:9");
-    expect(html).toContain("flex-grow:2");
-    expect(html).not.toContain("flex-grow:0");
+    expect(html).toContain("aria-hidden");
+    expect(html).toContain(">9</span> pass");
+    expect(html).toContain(">2</span> fail");
+    expect(html).not.toContain("flex-grow");
   });
 
   it("shows nothing when there is nothing to count", () => {

@@ -32,14 +32,15 @@ describe("runTitle", () => {
 });
 
 describe("RunSummary", () => {
-  it("makes the lot the page's one h1 and says what the agent found, in words and as a bar", () => {
+  it("makes the lot the page's one h1 and says what the agent found, in words and in counts", () => {
     const html = summary({});
     expect(html.match(/<h1/g)).toHaveLength(1);
     expect(html).toContain("Citric Acid · Lot L1");
     expect(html).toContain("Alpina · coa.pdf");
     expect(html).toContain("Non-conforming");
     expect(html).toContain("9 of 11 tests pass, 1 to review, 1 fail");
-    expect(html).toContain('role="img"');
+    expect(html).toContain(">9</span> pass");
+    expect(html).not.toContain('role="img"'); // no colored bar
     expect(html).toContain("Open");
   });
 
@@ -47,10 +48,10 @@ describe("RunSummary", () => {
     expect(summary({ decision: "rejected", decidedBy: "QA Anna" })).toContain("Rejected");
   });
 
-  it("has no bar for a document that is not a CoA", () => {
+  it("has no counts for a document that is not a CoA", () => {
     const html = summary({ result: result("Not a CoA", { pass: 0, fail: 0, review: 0 }) });
     expect(html).toContain("This document is not a Certificate of Analysis.");
-    expect(html).not.toContain('role="img"');
+    expect(html).not.toContain("to review</li>");
   });
 
   it("shows the progress while it is still running, with no verdict", () => {
