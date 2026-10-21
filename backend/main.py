@@ -6,10 +6,13 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from langgraph.types import Command
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from auth import require_user
 from jobs import Jobs, open_checkpointer
@@ -24,6 +27,9 @@ DEFAULT_DATA_DIR = Path(__file__).resolve().parent / "data"
 
 # one person's jobs that are queued or running: each one pays for model calls
 MAX_ACTIVE_JOBS = int(os.getenv("MAX_ACTIVE_JOBS_PER_USER", "20"))
+
+# requests one address may make to the jobs routes (a limit like "60/minute"; more are refused with 429)
+RATE_LIMIT = os.getenv("RATE_LIMIT", "60/minute")
 
 RECURSION_LIMIT = 40  # graph steps a run may take: the model decides how many, a normal check takes about 18
 
@@ -113,7 +119,11 @@ async def lifespan(_app: FastAPI):
             pending.put(None)
 
 
+limiter = Limiter(key_func=get_remote_address)  # the counts are kept in memory, per process
+
 app = FastAPI(lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(UploadLimit)
 # local development: the Next.js dev server calls this API straight from the browser (CORS_ORIGINS: comma-separated, to allow another)
 origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
@@ -125,8 +135,14 @@ async def health():
     return {"status": "ok"}
 
 
-# everything about jobs needs a signed-in person; /health stays open for whatever watches the server
-router = APIRouter(dependencies=[Depends(require_user)])
+@limiter.limit(lambda: RATE_LIMIT)
+def rate_limited(request: Request):
+    """Counts the request against its address's limit. A dependency because slowapi's middleware misses an included router's routes."""
+
+
+# everything about jobs needs a signed-in person; /health stays open for whatever watches the server and is never limited.
+# The limit comes first, so it also holds for requests that fail to sign in.
+router = APIRouter(dependencies=[Depends(rate_limited), Depends(require_user)])
 
 
 @router.post("/jobs", status_code=202)

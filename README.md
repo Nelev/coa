@@ -418,6 +418,7 @@ Every setting, for reference (the backend reads the environment and `backend/.en
 | `MAX_CONCURRENT_RUNS` | backend | worker threads, default 2 |
 | `MAX_UPLOAD_MB` | backend | largest upload accepted, default 20; the request needs a `Content-Length` |
 | `MAX_ACTIVE_JOBS_PER_USER` | backend | queued or running jobs one person may have, default 20; more are refused with 429 |
+| `RATE_LIMIT` | backend | requests one address may make to the jobs routes (not `/health`), default `60/minute`; more are refused with 429. The counts are kept in memory, per process |
 | `DATABASE_URL` | backend | required: the Postgres (with pgvector) that holds the `users` and `runs` tables and the agent's checkpoints |
 | `EMBEDDING_MODEL` | backend | the model, through OpenRouter, that embeds the answers people give the agent (kept in the vector store, see Memory); it must return 1536 dimensions, default `openai/text-embedding-3-small` |
 | `MEMORY_MIN_SCORE` | backend | how similar (0 to 1) an earlier answer must be to be offered to a person, default 0.8 (calibrated for the default embedding model) |
