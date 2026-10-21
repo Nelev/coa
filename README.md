@@ -25,7 +25,7 @@ The plant limits in `backend/docs/erp_demo.json` are **placeholder values**, not
 
    ![The runs overview, with a run that has a question for you at the top](docs/images/workflow-1-overview.jpg)
 
-2. **The agent works.** A run takes a minute or two (it makes several model calls). The row shows the current step and a progress bar,
+2. **The agent works.** A run takes about two minutes (it makes several model calls). The row shows the current step and a progress bar,
    and a worker takes the next file while others wait in the queue.
 
    ![A run being analyzed in the overview](docs/images/workflow-2-analyzing.jpg)
@@ -44,10 +44,11 @@ The plant limits in `backend/docs/erp_demo.json` are **placeholder values**, not
 
    ![A run that stopped to ask for review of two unit mismatches](docs/images/workflow-4-needs-answer.jpg)
 
-5. **Read the report** (below): the outcome and a bar of the results, the certificate's details, one alert per finding and a table with
+5. **Read the report** (below): the outcome and the count of passing, to-review and failing tests, the certificate's details, one alert per finding and a table with
    a verdict for every plant test. **Open the CoA** opens the uploaded PDF, which is kept as the record the decision is about.
 
-6. **Decide.** The bar at the bottom of the run page asks for the decision. Approving a lot the agent did not find conforming, holding
+6. **Decide.** On a phone or tablet a bar at the bottom of the run page opens the decision (as in the screenshot); on a wide screen the form sits in a
+   column beside the report. Approving a lot the agent did not find conforming, holding
    and rejecting all need a reason, and rejecting and approving are final. The decision, who took it and why are stored with the run.
    A non-conforming lot is also mailed to the quality team, when SMTP is set up.
 
@@ -99,7 +100,7 @@ load_document → validate_document ─┬→ get_document_data → load_plant_s
 The tools are in `backend/react_agent/tools.py`. Each returns its state update (the document text, the tests and the UI spec stay in the state, not in
 the conversation) and a short answer for the model. A tool called too early answers what to call first; any other failure (the ERP down, an invalid
 model reply) fails the run. A run is capped at `RECURSION_LIMIT` graph steps (`main.py`); a normal check takes about 18. Each model call is capped at `MAX_OUTPUT_TOKENS` (reasoning included) and a run at `MAX_RUN_OUTPUT_TOKENS`, both in `react_agent/const.py`; a reply cut off by the cap fails the run. The price of letting the model
-choose: a run takes longer (1.5 to 2.5 minutes on the samples, measured with `gpt-5-mini`) and the model can ignore its prompt, which is why the mail is a guarded tool.
+choose: a run takes longer (1.5 to 2 minutes on the conforming samples and about 3 on the defective one, measured with `gpt-5-mini`) and the model can ignore its prompt, which is why the mail is a guarded tool.
 
 The steps (the fixed graph's nodes, the ReAct agent's tools):
 
@@ -204,11 +205,11 @@ upload starts, so the idle page does not download it.
 ### What it looks like
 
 The report of `backend/docs/sample_coa_defective.pdf`, a CoA with five seeded defects (see the table under *Running it*). Above the tabs,
-the lot, the verdict and a bar of the test results are part of the page; the **Report** tab below is the json-render spec: the
+the lot, the verdict and the count of the test results are part of the page; the **Report** tab below is the json-render spec: the
 certificate title, an outcome Alert and the certificate details. The release decision always stays with QA (the **Decide** bar at the
-bottom).
+bottom, on a narrow screen).
 
-![Run page: verdict, test result bar and the start of the report](docs/images/report-summary.jpg)
+![Run page: verdict, test counts and the start of the report](docs/images/report-summary.jpg)
 
 The findings, one Alert per non-passing check, critical ones (red) before warnings (yellow). Each has the CoA's result and the plant's
 requirement.
@@ -220,12 +221,13 @@ The results table, with one verdict per plant test.
 ![Report results table](docs/images/report-results.jpg)
 
 To generate it yourself, start the backend and the frontend (see [Running it](#running-it)), click **Upload documents**
-and pick a CoA PDF. The report appears after about a minute.
+and pick a CoA PDF. The report appears after about two minutes.
 
 ## Repository layout
 
 ```
 docs/images/        screenshots used in this README
+docs/ux-redesign-plan.md   the UX and accessibility plan for the frontend
 docker-compose.yml  the stack: Postgres with pgvector (db), the API (backend) and the frontend
 backend/
   react_agent/      the ReAct agent main.py runs (the second implementation): the agent (react_agent.py), the steps of the check as tools (tools.py), what people answered about unsure checks (memory.py), its prompts (prompts.py), state (state.py) and constants (const.py)
@@ -240,7 +242,7 @@ backend/
   scripts/eval_compare.py         end-to-end check against the real model (runs the fixed graph)
   evals/                          the evaluation of the ReAct agent against the real model: scenarios, metrics, the runner that writes an Excel file
   tests/                          unit tests (mocked model, a real Postgres): API and queue, upload limits, database, sign-in, memory, comparison, validation, mail
-  main.py                         FastAPI app: /health, the /jobs endpoints (create, list, get, pdf, answer, decision), plus the job queue and its workers
+  main.py                         FastAPI app: /health, the /jobs endpoints (create, list, get, pdf, answer, decision) with their per-address rate limit, plus the job queue and its workers
   auth.py                         checks the WorkOS access token on every /jobs request
   middleware.py                   refuses an upload that is too large or has no Content-Length, before its body is read
   notify.py                       the mail about a non-conforming lot (SMTP): its text, and the sending the notify_quality_team and send_email tools do
@@ -257,6 +259,8 @@ frontend/           Next.js + shadcn dashboard, light / dark / system theme (tok
   components/overview.tsx          filters, search and sort, the list of rows, the empty state
   components/run-row.tsx           one row: status, product and lot, verdict counts or progress, time
   components/run-page.tsx          the report page: header, previous / next run, Report and Activity tabs
+  components/run-summary.tsx       the top of the run page: title, status, the verdict in words, and the pass / to review / fail counts (verdict-bar.tsx)
+  components/decision-bar.tsx      the bar at the foot of a narrow screen that opens the decision panel (from the lg breakpoint the form sits beside the report)
   components/answer-panel.tsx      the checks a paused agent flagged as unsure (a run that needs your review), and the form that answers them
   components/account-context.tsx   who is signed in (name, email), for the forms
   components/acting-as.tsx         "Deciding as ..." / "Answering as ...": the signed-in person, shown and not chosen
@@ -379,20 +383,11 @@ provider; a subdomain such as `alerts.example.com` keeps its reputation apart fr
 SMTP_FROM=CoA Agent <coa-alerts@alerts.example.com>
 ```
 
-#### With Gmail
-
-```
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587                  # default 587; STARTTLS is used when SMTP_USER is set
-SMTP_USER=you@gmail.com        # the login; also the "From" address unless SMTP_FROM is set
-SMTP_PASSWORD=...              # an App Password (needs 2-Step Verification), not your account password
-NOTIFY_EMAIL=you@example.com
-```
-
 #### Other providers
 
 Set `SMTP_HOST`, `SMTP_USER` and `SMTP_PASSWORD` to what the provider gives you for SMTP, and `SMTP_FROM` to a sender it has
-verified whenever the login is not itself an address (Brevo's is not, for example). Leave `SMTP_USER` out to send without
+verified whenever the login is not itself an address (Brevo's is not, for example; without `SMTP_FROM` the login is the sender).
+`SMTP_PORT` defaults to 587, and STARTTLS is used whenever `SMTP_USER` is set. Leave `SMTP_USER` out to send without
 encryption or login, e.g. to a local mail catcher on `127.0.0.1:1025`.
 
 A mail that cannot be sent never fails the job: it stays done, the worker keeps running, and the API logs one warning (from `react_agent.tools`):
@@ -480,8 +475,9 @@ cd backend && .venv/bin/uvicorn main:app --reload
 
 `POST /jobs` takes a PDF as multipart form data (field `file`), stores it and answers `202` with the new job. It refuses, before the job or the file is stored,
 a body without a `Content-Length` (`411`) or over `MAX_UPLOAD_MB` (`413`, checked before the body is read), a file that does not start like a PDF (`415`), and a person who already has
-`MAX_ACTIVE_JOBS_PER_USER` jobs queued or running (`429`); a run fails at its first step when the PDF has more than 30 pages. A run
-takes a minute or more, because the agent makes several model calls, so the work happens in the background: the
+`MAX_ACTIVE_JOBS_PER_USER` jobs queued or running (`429`); a run fails at its first step when the PDF has more than 30 pages. Every `/jobs`
+route is also limited per client address to `RATE_LIMIT` requests (default `60/minute`, `/health` is never limited): more are refused with
+`429`, before the sign-in is even checked. A run takes a minute or more, because the agent makes several model calls, so the work happens in the background: the
 client polls `GET /jobs` (every job, oldest first, without the report) or `GET /jobs/{id}` (one job, with the report).
 A job looks like this:
 
@@ -548,7 +544,7 @@ cd frontend && npm install && npm run dev
 ```
 
 Sign in with WorkOS first: the frontend needs the `frontend/.env.local` variables above. Start the backend (see above) and the frontend, then click **Upload documents** and pick a CoA PDF
-(for example `backend/docs/sample_coa_defective.pdf`). The report appears in the page after about a minute. The
+(for example `backend/docs/sample_coa_defective.pdf`). The report appears in the page after about two minutes. The
 frontend calls `http://localhost:8000`; set `NEXT_PUBLIC_API_URL` to use another address.
 
 When the API cannot be reached (or does not answer within 15 seconds) the page keeps what it shows, says so in a banner and tries again, waiting
@@ -568,7 +564,7 @@ docker compose -f ../docker-compose.yml up -d db   # the tests need a Postgres w
 ```
 
 The unit tests cover issue derivation, the retry and the fallback to `review`, the missing-spec routing, the job queue and
-restart behaviour, the upload limits, decisions, answers, the database (its tables, the migrations, the users), sign-in, and the mail (including the warning when it cannot be sent). The frontend has Vitest
+restart behaviour, the upload limits, the request rate limit, decisions, answers, the database (its tables, the migrations, the users), sign-in, and the mail (including the warning when it cannot be sent). The frontend has Vitest
 tests for the components and helpers.
 The eval script is slower (several model calls) and needs `OPENROUTER_API_KEY`. It exits non-zero if any
 verdict differs from the expected one. It covers the one-page conforming sample and the defective one, not the three-page sample.
@@ -616,8 +612,9 @@ should pause on a check it is unsure of, the `answers` a person would give.
 | `mail_correct` | the quality team was mailed exactly when expected: for a Non-conforming lot only |
 | `tools_correct` | the agent called exactly the expected tools, in that order (a call a tool refused counts) |
 
-**Running it.** It calls the real model through OpenRouter (`OPENROUTER_API_KEY`), which costs about two cents for the clean scenarios and
-a little over ten for `defective`, so nine scenarios cost about 23 cents:
+**Running it.** It calls the real model through OpenRouter (`OPENROUTER_API_KEY`), which costs about two to three cents for each scenario with a
+plant specification (three for `defective`), a little over one for the two without, and a tenth of a cent or less for the two non-CoAs, so nine
+scenarios cost about 16 cents:
 
 ```bash
 cd backend
@@ -667,7 +664,8 @@ its own folder changes. The backend's tests run against a Postgres service conta
 - Everything signed in sees everything: each job records its `owner`, but the API does not filter or check it, so any
   signed-in person can list every job, open its PDF and decide it. `by` on a decision and an answer is free text: the frontend fills it with the signed-in person's name, but the API does not check it.
 - `users` has the sign-in id, and the email and name only when the access token carries them, so those can be empty. Nothing else reads the table yet: `decided_by` and `by` stay free text, not a link to a user.
-- Uploads are limited (size, PDF only, jobs in progress per person, 30 pages), but there is no limit on the rate of requests, and the active-jobs count is checked before the job is added, so a burst of simultaneous uploads can overshoot it slightly.
+- Uploads are limited (size, PDF only, jobs in progress per person, 30 pages), and the active-jobs count is checked before the job is added, so a burst of simultaneous uploads can overshoot it slightly.
+- The request rate limit counts per client address as the API sees it, in memory and per process: behind a reverse proxy every request comes from the proxy's address and shares one count, and a restart resets the counts.
 - The API applies the migrations when it starts, which is safe for one process. With several, apply them first (`alembic upgrade head`) instead of letting them race.
 - The queue is in memory and per process, and the API must run as one uvicorn worker. Jobs live in the database and the uploads in
   `backend/data/`, with no cleanup; the uploads are on the API's disk, not in the database.
