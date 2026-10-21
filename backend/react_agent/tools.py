@@ -37,6 +37,17 @@ from agent.tools import get_material, send_email
 from schema.schema import DEFAULT_SCOPE, ClarificationNotes, CoAData, ComparisonResult, DocumentCheck, Issue, TestCheck
 
 from . import memory
+from .const import (
+    FALLBACK_UI_SPEC,
+    MAX_OUTPUT_TOKENS,
+    MAX_PAGES,
+    NO_USAGE,
+    NON_CONFORMING,
+    NOT_A_COA,
+    REPORTED,
+    VALIDATION_CHARS,
+    VERDICT_ISSUE,
+)
 from .prompts import COMPARE_PROMPT, EXTRACTION_PROMPT, NOTES_PROMPT, RENDER_UI_PROMPT, VALIDATE_PROMPT
 
 load_dotenv()
@@ -46,28 +57,11 @@ logger = logging.getLogger(__name__)
 State = Annotated[dict, InjectedState]  # not AgentState: the tool's input is validated, and a state still being filled lacks keys
 CallId = Annotated[str, InjectedToolCallId]
 
-MAX_PAGES = 30  # a CoA has a few pages; the whole text goes to the model, so a longer document is refused before any call is paid for
-VALIDATION_CHARS = 6000  # the start of a document is enough to tell what kind it is
-
-# check verdict -> (issue kind, issue severity); a pass raises no issue
-VERDICT_ISSUE = {"fail": ("non_conforming", "critical"), "review": ("needs_review", "warning")}
-
-# what the report shows of an answer; the scope and the rest stay out of the model's input
-REPORTED = ("test", "reason", "answer", "by", "summary", "topic")
-
-NON_CONFORMING = "Non-conforming"
-NOT_A_COA = "Not a CoA"
-
-NO_USAGE = {"cost": 0.0, "input_tokens": 0, "output_tokens": 0}  # also the keys of a usage dict
-
 
 def _alert_spec(title: str, message: str) -> dict:
     """A json-render spec holding a single error Alert."""
     alert = {"title": title, "message": message, "type": "error"}
     return {"root": "alert", "elements": {"alert": {"type": "Alert", "props": alert, "children": []}}}
-
-
-FALLBACK_UI_SPEC = _alert_spec("The report could not be generated", "The model did not return a valid layout. Run the agent again.")
 
 
 @lru_cache
@@ -76,6 +70,7 @@ def get_llm() -> ChatOpenAI:
         model="openai/gpt-5-mini",
         api_key=os.environ["OPENROUTER_API_KEY"],
         base_url="https://openrouter.ai/api/v1",
+        max_tokens=MAX_OUTPUT_TOKENS,
     )
 
 
