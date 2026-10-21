@@ -11,3 +11,4 @@ pypdf
 python-dotenv
 python-multipart
 PyJWT[crypto]>=2.15
+slowapi

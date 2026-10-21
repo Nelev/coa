@@ -107,6 +107,12 @@ def signed_in(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def fresh_rate_limit():
+    """Every test starts with an empty count of requests per address."""
+    main.limiter.reset()
+
+
+@pytest.fixture(autouse=True)
 def no_real_mail(monkeypatch):
     """agent.py loads backend/.env, which may hold real SMTP settings: a test that finishes a non-conforming job must not mail anyone."""
     for name in ("SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM", "NOTIFY_EMAIL", "APP_URL"):

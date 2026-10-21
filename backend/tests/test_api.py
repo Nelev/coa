@@ -315,6 +315,14 @@ def test_a_person_can_have_only_so_many_jobs_in_progress(start_app, monkeypatch)
     submit(client)  # the finished jobs no longer count
 
 
+def test_an_address_that_makes_too_many_requests_is_refused_except_for_health(start_app, monkeypatch):
+    monkeypatch.setattr(main, "RATE_LIMIT", "3/minute")
+    client = start_app()
+    assert [client.get("/jobs").status_code for _ in range(3)] == [200, 200, 200]
+    assert client.get("/jobs").status_code == 429
+    assert client.get("/health").status_code == 200  # whatever watches the server is never refused
+
+
 def test_an_unknown_job_is_a_404(start_app):
     assert start_app().get("/jobs/nope").status_code == 404
 
