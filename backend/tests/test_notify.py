@@ -1,4 +1,8 @@
+import io
+import json
 import smtplib
+import urllib.error
+import urllib.request
 
 import pytest
 
@@ -12,6 +16,11 @@ RESULT = {
     "supplier": "Alpina Chemicals",
 }
 JOB = {"id": "abc", "filename": "lot.pdf", "result": RESULT}
+
+
+@pytest.fixture(autouse=True)
+def no_resend_key(monkeypatch):
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)  # one in the developer's environment must not change the SMTP tests
 
 
 @pytest.fixture
@@ -123,3 +132,66 @@ def test_the_mail_links_to_the_job_page_when_the_app_url_is_known(sent, configur
 
     body = sent[-1].get_content()
     assert (link in body) if link else ("/runs/" not in body)
+
+
+@pytest.fixture
+def posted(monkeypatch):
+    """Replaces the HTTP call; each request made ends up in the returned list."""
+    requests = []
+
+    class Response:
+        def close(self):
+            pass
+
+    def urlopen(request, timeout):
+        requests.append(request)
+        return Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    return requests
+
+
+@pytest.fixture
+def resend(monkeypatch):
+    monkeypatch.setenv("RESEND_API_KEY", "re_secret")
+    monkeypatch.setenv("NOTIFY_EMAIL", "quality@example.com")
+    monkeypatch.setenv("SMTP_FROM", "CoA Agent <alerts@example.com>")
+
+
+def test_a_resend_key_means_one_https_post_and_no_smtp(sent, posted, resend):
+    send_non_conforming_mail(JOB)
+
+    assert sent == []  # the SMTP ports may be blocked: they are not touched
+    (request,) = posted
+    assert request.full_url == "https://api.resend.com/emails" and request.get_method() == "POST"
+    assert request.get_header("Authorization") == "Bearer re_secret"
+    payload = json.loads(request.data)
+    assert payload["from"] == "CoA Agent <alerts@example.com>" and payload["to"] == ["quality@example.com"]
+    assert payload["subject"] == "Non-conforming CoA: L26-10-4188"
+    assert "7 pass, 2 fail, 1 to review" in payload["text"]
+
+
+def test_resend_defaults_to_its_test_sender(posted, resend, monkeypatch):
+    monkeypatch.delenv("SMTP_FROM")
+
+    send_non_conforming_mail(JOB)
+
+    assert json.loads(posted[0].data)["from"] == "onboarding@resend.dev"
+
+
+def test_no_resend_mail_without_a_recipient(posted, resend, monkeypatch):
+    monkeypatch.delenv("NOTIFY_EMAIL")
+
+    send_non_conforming_mail(JOB)
+
+    assert posted == []
+
+
+def test_a_refused_resend_post_raises_with_resends_reason(monkeypatch, resend):
+    def refuse(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", {}, io.BytesIO(b'{"message":"domain is not verified"}'))
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+
+    with pytest.raises(RuntimeError, match="Resend answered 403.*domain is not verified"):
+        send_non_conforming_mail(JOB)

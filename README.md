@@ -245,7 +245,7 @@ backend/
   main.py                         FastAPI app: /health, the /jobs endpoints (create, list, get, pdf, answer, decision) with their per-address rate limit, plus the job queue and its workers
   auth.py                         checks the WorkOS access token on every /jobs request
   middleware.py                   refuses an upload that is too large or has no Content-Length, before its body is read
-  notify.py                       the mail about a non-conforming lot (SMTP): its text, and the sending the notify_quality_team and send_email tools do
+  notify.py                       the mail about a non-conforming lot (SMTP): its text, and the sending (SMTP, or Resend's HTTP API) the notify_quality_team and send_email tools do
   jobs.py                         the jobs store (the `runs` and `users` tables in Postgres, with the decisions), the uploaded PDFs (in backend/data/, gitignored) and `open_checkpointer`, the agent's Postgres checkpointer
   migrations/, alembic.ini        the database schema, as Alembic migrations (versions/0001_users_and_runs.py is the first); the API applies them when it starts
   Dockerfile                      the API's image (one uvicorn process)
@@ -358,7 +358,7 @@ and their email and name when the access token carries them), and the job points
 
 When an analysis finds a lot **non-conforming**, the API can mail
 its summary (product, lot, supplier, test counts and a link to the job). Any SMTP provider works; add the settings to
-`backend/.env`. Without `SMTP_HOST` and `NOTIFY_EMAIL` no mail is sent. `.env` is loaded when the API starts, so **restart the
+`backend/.env`. Without `NOTIFY_EMAIL`, and either `SMTP_HOST` or `RESEND_API_KEY`, no mail is sent. `.env` is loaded when the API starts, so **restart the
 API after changing it** (`fastapi dev` reloads on code changes, not on `.env`).
 
 #### With Resend
@@ -382,6 +382,20 @@ provider; a subdomain such as `alerts.example.com` keeps its reputation apart fr
 ```
 SMTP_FROM=CoA Agent <coa-alerts@alerts.example.com>
 ```
+
+#### Through Resend's HTTP API (hosts that block SMTP)
+
+Some hosts block the SMTP ports (25, 465, 587): Render's free plan does since September 2025. Set `RESEND_API_KEY` and the mail goes
+to Resend's HTTP API (HTTPS, port 443) instead; `SMTP_HOST`, `SMTP_USER` and `SMTP_PASSWORD` are then ignored.
+
+```
+RESEND_API_KEY=re_...                 # the API key (sending access is enough)
+SMTP_FROM=onboarding@resend.dev       # optional: this is the default; the same sender rules as above apply
+NOTIFY_EMAIL=you@example.com
+APP_URL=https://your-frontend.example.com
+```
+
+A refused request is logged like any other failure, with Resend's reason (`Resend answered 403: ...`).
 
 #### Other providers
 
@@ -423,7 +437,8 @@ Every setting, for reference (the backend reads the environment and `backend/.en
 | `CORS_ORIGINS` | backend | allowed browser origins, comma-separated, default `http://localhost:3000` |
 | `BACKEND_PORT`, `FRONTEND_PORT`, `DB_PORT` | docker compose | the host ports of the containers, default 8000, 3000 and 5432 |
 | `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_ENDPOINT`, `LANGSMITH_AGENT_ID`, `LANGSMITH_AGENT_ENVIRONMENT` | backend | optional: send a trace of every run to LangSmith, see [Tracing](#tracing-langsmith) |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `NOTIFY_EMAIL`, `APP_URL` | backend | the non-conforming mail, see above |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `NOTIFY_EMAIL`, `APP_URL` | backend | the non-conforming mail over SMTP, see above |
+| `RESEND_API_KEY` | backend | send the non-conforming mail through Resend's HTTP API instead of SMTP, for hosts that block SMTP; see above |
 | `WORKOS_API_KEY`, `WORKOS_COOKIE_PASSWORD`, `NEXT_PUBLIC_WORKOS_REDIRECT_URI` | frontend | WorkOS AuthKit (the cookie password is 32+ characters) |
 | `NEXT_PUBLIC_API_URL` | frontend | the API's address, default `http://localhost:8000` |
 

@@ -57,7 +57,8 @@ How a request flows:
 | `EMBEDDING_MODEL`, `MEMORY_MIN_SCORE` | no | The memory's embedding model and similarity threshold; leave the defaults. |
 | `CHECKPOINT_SCHEMA` | no | Schema of the agent's tables, default `langgraph`. |
 | `JOBS_DIR` | no | Where the PDFs are saved, default `backend/data/` (ephemeral on Render). |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `NOTIFY_EMAIL`, `APP_URL` | no | The mail for a non-conforming lot. **Not set**: the mail is off. Render's free plan may block outbound SMTP (unverified). |
+| `RESEND_API_KEY`, `SMTP_FROM`, `NOTIFY_EMAIL`, `APP_URL` | no | The mail for a non-conforming lot, sent through [Resend](https://resend.com)'s HTTP API. **Not set**: the mail is off. `RESEND_API_KEY` is a secret (`re_...`). `NOTIFY_EMAIL` is who gets it. `APP_URL` is the Vercel address, so the mail links to the run. `SMTP_FROM` is the sender: it defaults to `onboarding@resend.dev`, which only delivers to the address you signed up to Resend with; to mail anyone else, verify a domain in Resend and use an address on it. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` | no | Mail over SMTP instead. **Does not work on Render's free plan**, which blocks outbound ports 25, 465 and 587 ([changelog](https://render.com/changelog/free-web-services-will-no-longer-allow-outbound-traffic-to-smtp-ports)). Ignored when `RESEND_API_KEY` is set. |
 | `LANGSMITH_*` | no | Optional tracing, see the README. |
 
 ### Frontend (Vercel → project → Settings → Environment Variables)
@@ -140,7 +141,13 @@ The answer must be a 200 with `access-control-allow-origin: https://coa-pink-sev
 ### 7. WorkOS: register the addresses
 Add the redirect URI, the initiate login URI and the sign-out URI from the table above. No redeploy is needed.
 
-### 8. Smoke test
+### 8. Resend: the mail for a non-conforming lot (optional)
+1. In Resend, create an API key with **sending access** only.
+2. In Render set `RESEND_API_KEY`, `NOTIFY_EMAIL` and `APP_URL` (and `SMTP_FROM` once a domain is verified). Render restarts the service.
+3. Upload `backend/docs/sample_coa_defective.pdf`: when the run is done, the mail should arrive, and the activity log's `notify_quality_team` step
+   should say `sent`. A conforming lot (`sample_coa_citric_acid.pdf`) sends nothing. If it says `not sent: ...`, the Render logs have the reason.
+
+### 9. Smoke test
 1. Open the Vercel address and sign in.
 2. Upload `backend/docs/sample_coa_citric_acid.pdf`: after about 2 minutes it should show a report.
 3. Upload `backend/docs/sample_coa_unclear_units.pdf`: it should stop and ask a question. Answer it, then approve or reject.
@@ -212,7 +219,7 @@ lower the reasoning effort for this step.
 5. **The WorkOS environment is a staging one.** Move to a production environment (own keys, own redirect URIs) before real use.
 6. **Not for real lot-release decisions.** The free database has no SLA and few backups, while the decision, who took it and why live
    there. Supplier CoAs are also sent to third-party model providers through OpenRouter.
-7. **Mail is off.** Render's free plan may block outbound SMTP (unverified); use the mail provider's HTTP API instead if you need it.
+7. **Mail needs a Resend key.** Render's free plan blocks SMTP, so the mail goes through Resend's HTTP API. Without `RESEND_API_KEY` it is off. The default sender only delivers to the Resend account's own address: verify a domain to mail a team.
 8. **Vercel Hobby is for non-commercial use.** Commercial use needs Pro.
 9. **Preview deployments do not sign in or reach the API:** each has its own address, in neither `CORS_ORIGINS` nor the WorkOS redirects.
 10. **Dependencies are unpinned** (`backend/requirements.txt` has no versions), so a rebuild can pull different packages.
