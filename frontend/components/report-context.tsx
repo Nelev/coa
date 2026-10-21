@@ -221,6 +221,8 @@ const ReportContext = createContext<{
   // tries an upload that failed again, or forgets it (it is not on the server, so there is nothing else to remove)
   retryUpload: (id: string) => void;
   dismissRun: (id: string) => void;
+  // deletes every run and its certificate on the server; rejects with the server's reason when it refuses (a run is still being analyzed)
+  clearRuns: () => Promise<void>;
   // records the signed-in person's decision on a finished run (sent as `by`: their name); rejects with the server's reason when it refuses (a reason is missing, the lot was decided already)
   decide: (id: string, decision: Decision, reason: string) => Promise<void>;
   // answers what a waiting run asks (by test name; a test left out stays a review) and queues it to continue; `remember` says who each answer is
@@ -337,6 +339,12 @@ export function ReportProvider({ accessToken, children }: { accessToken: string;
     void startUploads([file]);
   }
 
+  async function clearRuns() {
+    await request("/jobs", { method: "DELETE" });
+    failedFiles.current.clear();
+    setRuns([]);
+  }
+
   // the signed-in person's input on a job (a decision, an answer): the server answers with the job as it is now
   async function post(id: string, action: "decision" | "answer", body: object) {
     const init = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
@@ -360,6 +368,7 @@ export function ReportProvider({ accessToken, children }: { accessToken: string;
         upload,
         retryUpload,
         dismissRun,
+        clearRuns,
         decide,
         answer,
       }}

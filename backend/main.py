@@ -127,7 +127,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(UploadLimit)
 # local development: the Next.js dev server calls this API straight from the browser (CORS_ORIGINS: comma-separated, to allow another)
 origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST"], allow_headers=["Authorization"])
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST", "DELETE"], allow_headers=["Authorization"])
 
 
 @app.get("/health")
@@ -164,6 +164,15 @@ def create_job(file: UploadFile, user: Annotated[dict, Depends(require_user)]):
 def list_jobs():
     """Every job, oldest first, with the statuses its nodes reported; the report itself is in GET /jobs/{id}."""
     return store.all()
+
+
+@router.delete("/jobs", status_code=204)
+def clear_jobs():
+    """Delete every job, its PDF and the agent's checkpoints. Refused while a job is queued or running: a worker would write them again."""
+    if store.any_active():
+        raise HTTPException(status_code=409, detail="documents are being analyzed: wait for them to finish")
+    for job_id in store.clear():
+        agent_app.checkpointer.delete_thread(job_id)
 
 
 @router.get("/jobs/{job_id}")
