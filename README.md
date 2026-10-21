@@ -98,7 +98,7 @@ load_document → validate_document ─┬→ get_document_data → load_plant_s
 
 The tools are in `backend/react_agent/tools.py`. Each returns its state update (the document text, the tests and the UI spec stay in the state, not in
 the conversation) and a short answer for the model. A tool called too early answers what to call first; any other failure (the ERP down, an invalid
-model reply) fails the run. A run is capped at `RECURSION_LIMIT` graph steps (`main.py`); a normal check takes about 18. The price of letting the model
+model reply) fails the run. A run is capped at `RECURSION_LIMIT` graph steps (`main.py`); a normal check takes about 18. Each model call is capped at `MAX_OUTPUT_TOKENS` (reasoning included) and a run at `MAX_RUN_OUTPUT_TOKENS`, both in `react_agent/const.py`; a reply cut off by the cap fails the run. The price of letting the model
 choose: a run takes longer (1.5 to 2.5 minutes on the samples, measured with `gpt-5-mini`) and the model can ignore its prompt, which is why the mail is a guarded tool.
 
 The steps (the fixed graph's nodes, the ReAct agent's tools):
@@ -228,7 +228,7 @@ and pick a CoA PDF. The report appears after about a minute.
 docs/images/        screenshots used in this README
 docker-compose.yml  the stack: Postgres with pgvector (db), the API (backend) and the frontend
 backend/
-  react_agent/      the ReAct agent main.py runs (the second implementation): the agent (react_agent.py), the steps of the check as tools (tools.py), what people answered about unsure checks (memory.py), its prompts (prompts.py) and state (state.py)
+  react_agent/      the ReAct agent main.py runs (the second implementation): the agent (react_agent.py), the steps of the check as tools (tools.py), what people answered about unsure checks (memory.py), its prompts (prompts.py), state (state.py) and constants (const.py)
   agent/            the fixed graph, the first implementation (agent.py, prompts.py, state.py), and the get_material and send_email tools (tools.py) that the ReAct agent's tools use
   schema/           Pydantic models: CoA extraction, check verdicts, issues, the API's answer and decision bodies (schema.py)
   erp.py            the demo ERP: the material master, read from docs/erp_demo.json

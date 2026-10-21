@@ -9,7 +9,7 @@ from langgraph.types import Command
 
 import erp
 import notify
-from react_agent import memory
+from react_agent import memory, react_agent
 from react_agent import tools as agent_tools
 from react_agent.react_agent import app, graph
 from react_agent.tools import tools
@@ -147,6 +147,20 @@ def test_an_erp_failure_fails_the_run(fake_llm, monkeypatch):
     fake_llm(*check_sequence("pass")[:6], call("load_plant_spec"))
     with pytest.raises(ConnectionError):
         run()
+
+
+def test_a_reply_cut_off_by_the_token_limit_fails_the_run(fake_llm):
+    cut_off = AIMessage("", response_metadata={"finish_reason": "length"})
+    fake_llm(cut_off)
+    with pytest.raises(RuntimeError, match="ran out of output tokens"):
+        run()
+
+
+def test_a_run_over_its_output_budget_fails(fake_llm):
+    llm = fake_llm(DONE)
+    with pytest.raises(RuntimeError, match="output tokens"):
+        app.invoke({"document_path": PDF, "output_tokens": react_agent.MAX_RUN_OUTPUT_TOKENS + 1})
+    assert llm.calls == 0
 
 
 def test_the_tools_take_no_arguments_from_the_model():

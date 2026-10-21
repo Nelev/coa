@@ -18,15 +18,9 @@ from sqlalchemy.pool import NullPool
 
 from jobs import in_schema, langgraph_schema, now_ms
 
+from .const import COLLECTION, EMBEDDING_MODEL, MAX_PRECEDENTS, MIN_SCORE
+
 load_dotenv()
-
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL") or "openai/text-embedding-3-small"
-# the least similarity (0 to 1) for an earlier answer to be offered. With text-embedding-3-small the same situation in other words scores
-# about 0.86 and an unrelated check of the same test 0.72, so 0.8; another embedding model needs its own value.
-MIN_SCORE = float(os.getenv("MEMORY_MIN_SCORE") or 0.8)
-MAX_PRECEDENTS = 3  # how many earlier answers are offered for one check
-
-COLLECTION = "clarifications"
 
 
 @lru_cache

@@ -9,6 +9,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.prebuilt.tool_node import ToolInvocationError
 
+from .const import MAX_RUN_OUTPUT_TOKENS
 from .prompts import SYSTEM_PROMPT
 from .state import AgentState
 from .tools import OutOfOrder, agent_model, call_usage, tools
@@ -16,10 +17,14 @@ from .tools import OutOfOrder, agent_model, call_usage, tools
 
 def agent(state: AgentState) -> dict:
     """Ask the model for the next step: a tool call, or the final answer."""
+    if state.get("output_tokens", 0) > MAX_RUN_OUTPUT_TOKENS:
+        raise RuntimeError(f"the run used more than {MAX_RUN_OUTPUT_TOKENS} output tokens")
     history = state.get("messages", [])
     filename, job_id = state.get("filename") or "uploaded", state.get("job_id") or "unknown"
     task = [] if history else [HumanMessage(f"Check the certificate in the file {filename} (job id {job_id}).")]
     response = agent_model().invoke([SystemMessage(SYSTEM_PROMPT), *task, *history])
+    if response.response_metadata.get("finish_reason") == "length":  # a cut-off reply has no tool calls: it would read as the final answer
+        raise RuntimeError("the model ran out of output tokens")
     return {**call_usage(response), "messages": [*task, response]}  # the first call also puts the task in the state
 
 
