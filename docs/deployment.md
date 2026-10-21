@@ -52,6 +52,8 @@ How a request flows:
 | `MAX_CONCURRENT_RUNS` | no | Worker threads, default 2. |
 | `MAX_UPLOAD_MB` | no | Largest upload, default 20. |
 | `MAX_ACTIVE_JOBS_PER_USER` | no | Queued or running jobs per person, default 20. |
+| `RATE_LIMIT` | no | Requests one address may make to the jobs routes (not `/health`), default `60/minute`; more are refused with 429. The counts are kept in memory, per process. The page polls once a second while a run is active, which is about 60 requests a minute from one tab: consider `600/minute` here (see Troubleshooting). |
+| `FORWARDED_ALLOW_IPS` | no | Read by uvicorn, not by the app. Behind Render's proxy the rate limit sees the proxy's address unless this is `*`, so every person would share one limit. `*` trusts the forwarding header from anyone, which lets a client fake its address: acceptable for a demo. |
 | `EMBEDDING_MODEL`, `MEMORY_MIN_SCORE` | no | The memory's embedding model and similarity threshold; leave the defaults. |
 | `CHECKPOINT_SCHEMA` | no | Schema of the agent's tables, default `langgraph`. |
 | `JOBS_DIR` | no | Where the PDFs are saved, default `backend/data/` (ephemeral on Render). |
@@ -167,6 +169,7 @@ Add the redirect URI, the initiate login URI and the sign-out URI from the table
 | "The server cannot be reached" and the backend's health check works | CORS: `CORS_ORIGINS` does not match the Vercel address (the preflight answers `Disallowed CORS origin`) | Set it exactly, redeploy Render, repeat the preflight check. |
 | Same message, CORS is right | `NEXT_PUBLIC_API_URL` is wrong or Vercel was not redeployed after changing it | Fix it and redeploy. |
 | Every request answers 401 | `WORKOS_CLIENT_ID` differs between Vercel and Render | Use the same value in both. |
+| Requests answer 429 ("the server answered 429"), intermittent "server cannot be reached" while a run is active, reports that do not appear | The rate limit (`RATE_LIMIT`, default `60/minute` per address) is reached: the page polls once a second, and behind Render's proxy everyone may share one address. Not confirmed on this deployment: look for `429` in the Render logs | Set `RATE_LIMIT` to `600/minute` and `FORWARDED_ALLOW_IPS` to `*` on Render. Longer term, limit per signed-in person and count only requests that change something, not polling. |
 | Every request answers 503 | `WORKOS_CLIENT_ID` is missing on Render | Add it. |
 | First load after a quiet period takes about a minute | Render's free service was asleep | Wait: the page retries by itself. |
 
