@@ -52,8 +52,14 @@ const { registry } = defineRegistry(catalog, {
 });
 
 export function ReportRenderer({ spec }: { spec: unknown }) {
-  // The spec is written by a model: check it against the catalog before rendering it.
-  const shown = useMemo(() => (catalog.validate(spec).success ? (demoteTopHeading(spec as Spec) as Spec) : null), [spec]);
+  // The spec is written by a model: check it against the catalog before rendering it. The page only says that the layout is invalid, so
+  // the reason (which element, which property) goes to the console.
+  const shown = useMemo(() => {
+    const checked = catalog.validate(spec);
+    if (checked.success) return demoteTopHeading(spec as Spec) as Spec;
+    console.error("the report's layout is invalid:", checked.error?.issues ?? checked.error);
+    return null;
+  }, [spec]);
   const issues = useMemo(() => uniqueAnchors(shown ? issueTitles(shown) : [], "issue"), [shown]);
 
   // the report arrives after the page, so the browser has already looked for #test-assay and not found it

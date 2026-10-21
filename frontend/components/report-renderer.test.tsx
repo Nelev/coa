@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ReportRenderer } from "@/components/report-renderer";
 
 const SPEC = { root: "a", elements: { a: { type: "Text", props: { text: "Assay: 99.8 %" }, children: [] } } };
@@ -12,6 +12,14 @@ describe("ReportRenderer", () => {
   it("shows an error instead of rendering a spec that is not valid", () => {
     const html = renderToStaticMarkup(<ReportRenderer spec={{ elements: "not a map" }} />);
     expect(html).toContain("layout is invalid");
+  });
+
+  it("logs why a spec is not valid", () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const spec = { root: "a", elements: { a: { type: "Video", props: {}, children: [] } } };
+    renderToStaticMarkup(<ReportRenderer spec={spec} />);
+    expect(log).toHaveBeenCalledWith("the report's layout is invalid:", expect.anything());
+    log.mockRestore();
   });
 
   it("rejects a component that is outside the catalog", () => {
