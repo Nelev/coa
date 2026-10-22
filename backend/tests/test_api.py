@@ -250,7 +250,7 @@ def test_an_agent_that_ends_without_a_report_is_an_error(start_app, monkeypatch)
 
 
 def test_at_most_the_configured_number_of_jobs_run_at_once(start_app, monkeypatch):
-    lock, running, most = threading.Lock(), 0, 0
+    lock, release, running, most = threading.Lock(), threading.Event(), 0, 0
 
     class SlowAgent(FakeAgent):
         def play(self, inputs):
@@ -258,7 +258,7 @@ def test_at_most_the_configured_number_of_jobs_run_at_once(start_app, monkeypatc
             with lock:
                 running += 1
                 most = max(most, running)
-            time.sleep(0.05)
+            release.wait(10)
             with lock:
                 running -= 1
             yield from super().play(inputs)
@@ -267,6 +267,11 @@ def test_at_most_the_configured_number_of_jobs_run_at_once(start_app, monkeypatc
     monkeypatch.setattr(main, "agent_app", SlowAgent())
 
     ids = [submit(client)["id"] for _ in range(5)]
+    deadline = time.monotonic() + 10
+    while running < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.2)  # a third job would have started by now
+    release.set()
     assert {wait_for_end(client, job_id)["status"] for job_id in ids} == {"done"}
     assert most == 2
 
