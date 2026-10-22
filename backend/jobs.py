@@ -15,6 +15,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
 from psycopg.sql import SQL, Identifier
+from psycopg_pool import ConnectionPool
 
 # what a listing returns: everything but the (large) spec, and the ordering column
 SUMMARY = (
@@ -41,8 +42,20 @@ def open_checkpointer(dsn: str) -> Generator[PostgresSaver, None, None]:
     """The agent's checkpointer, in LangGraph's schema, created with its tables when missing.
 
     PostgresSaver has no schema option: it creates its tables where the connection's search_path points.
+    It gets a pool, not one connection for the life of the process: Neon suspends an idle database and drops its connections, and a
+    connection that outlives that fails every later run with "the connection is closed". The pool tests a connection before handing it
+    out, and retires one that has been idle for long.
     """
-    with PostgresSaver.from_conn_string(in_schema(dsn, langgraph_schema(dsn))) as checkpointer:
+    with ConnectionPool(
+        in_schema(dsn, langgraph_schema(dsn)),
+        min_size=1,
+        max_size=10,  # the workers, plus the requests that clear a run's checkpoints
+        max_idle=240,  # under Neon's 5 minutes of idleness
+        check=ConnectionPool.check_connection,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},  # what PostgresSaver asks of a connection
+        open=True,
+    ) as pool:
+        checkpointer = PostgresSaver(pool)
         checkpointer.setup()  # nothing happens when the tables exist
         yield checkpointer
 
