@@ -209,8 +209,9 @@ lower the reasoning effort for this step.
 
 1. **PDFs are lost whenever Render restarts or sleeps** (15 idle minutes). "Open the CoA" then answers 404, and a job caught mid-restart
    fails. Fix: store the PDFs in Postgres (`bytea`) or object storage (Neon Object Storage or Cloudflare R2).
-2. **Neon scales to zero after 5 idle minutes.** The agent's checkpointer holds one connection for the life of the process, which may
-   die when the compute suspends (untested). Fix: a `psycopg_pool.ConnectionPool` with a health check.
+2. **Neon scales to zero after 5 idle minutes**, which drops every open connection. The agent's checkpointer used one connection for the life
+   of the process, so the first upload after a quiet period failed with "the connection is closed" (while `/health`, which never touches
+   the database, stayed green). Fixed: it now uses a `psycopg_pool.ConnectionPool` that tests a connection before handing it out.
 3. **Never run two backend instances at once.** On startup `requeue_unfinished` turns every `running` job into `queued`, so two
    overlapping instances (for example during a deploy) would both run the same job. Keep one instance and a recreate deploy; later,
    claim jobs with `FOR UPDATE SKIP LOCKED`.
@@ -228,10 +229,9 @@ lower the reasoning effort for this step.
 
 1. Find and fix the missing report (see the open issue).
 2. Keep the PDFs somewhere that survives restarts (limitation 1).
-3. Pool the checkpointer's connection (limitation 2).
-4. Pin the backend dependencies; run the container as a non-root user with a `HEALTHCHECK` on `/health`.
-5. Invite-only sign-up and a daily spend cap (limitation 4); a WorkOS production environment.
-6. Monitoring (an uptime check on `/health`, Sentry) and a scheduled `pg_dump` backup.
+3. Pin the backend dependencies; run the container as a non-root user with a `HEALTHCHECK` on `/health`.
+4. Invite-only sign-up and a daily spend cap (limitation 4); a WorkOS production environment.
+5. Monitoring (an uptime check on `/health`, Sentry) and a scheduled `pg_dump` backup.
 
 ## Sources
 

@@ -2,7 +2,7 @@ fastapi[standard]
 uvicorn[standard]
 langgraph
 langgraph-checkpoint-postgres
-psycopg[binary]
+psycopg[binary,pool]
 alembic
 langchain
 langchain-openai
